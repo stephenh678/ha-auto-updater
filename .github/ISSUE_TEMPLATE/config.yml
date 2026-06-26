@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/stephenh678/ha-auto-updater/blob/main/custom_components/ha_auto_updater/README.md
+    about: Configuration options, entities, services, and troubleshooting.
