@@ -1,0 +1,77 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HA Auto Updater",
+        "description": "Choose how often Auto Updater checks for updates and when it runs. A backup (if enabled) is only taken when updates are actually installed — never on its own.",
+        "data": {
+          "enabled": "Enable automatic updates",
+          "frequency": "How often to check for updates",
+          "time_of_day": "Time of day to run",
+          "day_of_week": "Day of week",
+          "pre_notify_delay": "Notify before installing",
+          "stagger_delay": "Pause between each update",
+          "retry_delay": "Wait before retrying a failed install",
+          "include_major": "Include major version updates",
+          "max_updates_per_run": "Maximum updates per run (0 = unlimited)",
+          "backup_keep_days": "Auto-purge backups older than",
+          "notify_service": "Forward notifications to service",
+          "weekly_digest": "Send weekly digest",
+          "notify_on_new_updates": "Notify when new updates are detected",
+          "excluded_entities": "Exclude these items from auto-update"
+        },
+        "data_description": {
+          "frequency": "How often Auto Updater looks for and installs updates. Hourly runs at the top of every hour and ignores the time and day below; Daily runs once a day at the time below; Weekly runs once a week on the day and time below. (A background scan also refreshes the pending count every 30 minutes, but never installs.)",
+          "time_of_day": "The time the Daily or Weekly run happens. Ignored when frequency is Hourly.",
+          "day_of_week": "Only used when frequency is set to Weekly.",
+          "pre_notify_delay": "Minutes to wait (with a heads-up notification) before installing. 0 = install immediately.",
+          "stagger_delay": "Seconds to pause between each individual update. 0 = no pause.",
+          "retry_delay": "Seconds to wait before the single automatic retry of a failed install.",
+          "max_updates_per_run": "Cap on how many updates install per run. Leave at 0 for unlimited.",
+          "backup_keep_days": "Only used when 'Auto-Purge Old Backups' is on. Pre-update backups older than this many days are deleted.",
+          "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
+          "notify_on_new_updates": "Requires a notify service above."
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one instance of Auto Updater is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Auto Updater Settings",
+        "description": "Choose how often Auto Updater checks for updates and when it runs. A backup (if enabled) is only taken when updates are actually installed — never on its own. Feature toggles (backup, notifications, debug, etc.) are switches on the device page.",
+        "data": {
+          "enabled": "Enable automatic updates",
+          "frequency": "How often to check for updates",
+          "time_of_day": "Time of day to run",
+          "day_of_week": "Day of week",
+          "pre_notify_delay": "Notify before installing",
+          "stagger_delay": "Pause between each update",
+          "retry_delay": "Wait before retrying a failed install",
+          "include_major": "Include major version updates",
+          "max_updates_per_run": "Maximum updates per run (0 = unlimited)",
+          "backup_keep_days": "Auto-purge backups older than",
+          "notify_service": "Forward notifications to service",
+          "weekly_digest": "Send weekly digest",
+          "notify_on_new_updates": "Notify when new updates are detected",
+          "excluded_entities": "Exclude these items from auto-update"
+        },
+        "data_description": {
+          "frequency": "How often Auto Updater looks for and installs updates. Hourly runs at the top of every hour and ignores the time and day below; Daily runs once a day at the time below; Weekly runs once a week on the day and time below. (A background scan also refreshes the pending count every 30 minutes, but never installs.)",
+          "time_of_day": "The time the Daily or Weekly run happens. Ignored when frequency is Hourly.",
+          "day_of_week": "Only used when frequency is set to Weekly.",
+          "pre_notify_delay": "Minutes to wait (with a heads-up notification) before installing. 0 = install immediately.",
+          "stagger_delay": "Seconds to pause between each individual update. 0 = no pause.",
+          "retry_delay": "Seconds to wait before the single automatic retry of a failed install.",
+          "max_updates_per_run": "Cap on how many updates install per run. Leave at 0 for unlimited.",
+          "backup_keep_days": "Only used when 'Auto-Purge Old Backups' is on. Pre-update backups older than this many days are deleted.",
+          "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
+          "notify_on_new_updates": "Requires a notify service above."
+        }
+      }
+    }
+  }
+}

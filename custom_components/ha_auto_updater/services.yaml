@@ -1,0 +1,41 @@
+run_updates:
+  name: Run Updates Now
+  description: Immediately check for and install all available updates.
+
+snooze_update:
+  name: Snooze Update
+  description: Temporarily skip a specific update entity for a number of days.
+  fields:
+    entity_id:
+      name: Update entity
+      description: The update.* entity to snooze.
+      required: true
+      example: update.home_assistant_core_update
+      selector:
+        entity:
+          domain: update
+    days:
+      name: Days
+      description: How many days to snooze the update.
+      required: false
+      default: 7
+      example: 7
+      selector:
+        number:
+          min: 1
+          max: 365
+          unit_of_measurement: days
+          mode: box
+
+clear_snooze:
+  name: Clear Snooze
+  description: Clear the snooze for one update entity, or all snoozes if none is given.
+  fields:
+    entity_id:
+      name: Update entity
+      description: The update.* entity to un-snooze. Leave empty to clear all snoozes.
+      required: false
+      example: update.home_assistant_core_update
+      selector:
+        entity:
+          domain: update

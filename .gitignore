@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Integration runtime/state files (not part of the repo)
+*.tmp
+ha_auto_updater_history.json
+ha_auto_updater_digest.json
+ha_auto_updater_backups.json
+ha_auto_updater_snooze.json

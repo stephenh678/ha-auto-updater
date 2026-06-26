@@ -1,0 +1,13 @@
+{
+  "domain": "ha_auto_updater",
+  "name": "HA Auto Updater",
+  "codeowners": ["@stephenh678"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/stephenh678/ha-auto-updater",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/stephenh678/ha-auto-updater/issues",
+  "requirements": [],
+  "version": "1.1.0"
+}
