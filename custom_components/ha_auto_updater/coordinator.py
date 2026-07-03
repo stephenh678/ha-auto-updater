@@ -243,6 +243,13 @@ class AutoUpdaterCoordinator:
                 if log_skips:
                     _LOGGER.debug("Auto Updater: skipping excluded %s", entity.entity_id)
                 continue
+            # Skip entities HA is already managing natively (e.g. Supervisor auto-update enabled)
+            if entity.attributes.get("auto_update", False):
+                _LOGGER.debug(
+                    "Auto Updater: skipping %s — auto_update=True (HA manages it natively)",
+                    entity.entity_id,
+                )
+                continue
             if self._is_snoozed(entity.entity_id):
                 if log_skips:
                     _LOGGER.info(
@@ -1026,7 +1033,7 @@ class AutoUpdaterCoordinator:
     # ------------------------------------------------------------------
 
     def _get_update_source(self, entity_id: str) -> str:
-        """Categorise an update entity as HA System, Add-on, HACS, or Custom."""
+        """Categorise an update entity as HA System, Add-on, HACS, Firmware, or Custom."""
         if entity_id in _HA_SYSTEM_UPDATE_ENTITIES:
             return "HA System"
         registry = er.async_get(self.hass)
@@ -1037,6 +1044,9 @@ class AutoUpdaterCoordinator:
             return "Add-on"
         if entry.platform == "hacs":
             return "HACS"
+        # Device firmware platforms (ESPHome, Z-Wave JS, Matter, etc.)
+        if entry.platform in {"esphome", "zwave_js", "matter", "bluetooth"}:
+            return "Firmware"
         return "Custom"
 
     # ------------------------------------------------------------------

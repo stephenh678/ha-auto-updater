@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, and full dashboard control.
 
-> **Version:** 1.1.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.1.1 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -105,7 +105,7 @@ The setup flow runs the first time you add the integration. All options can be c
 
 | Entity ID | Description |
 |-----------|-------------|
-| `sensor.ha_auto_updater_auto_updater_pending_updates` | Number of updates currently available. Updates every 30 minutes automatically. Attributes: `updates` (each pending update with source `HA System` / `Add-on` / `HACS` / `Custom`), `release_notes` (title + URL per update), and `snoozed` (currently snoozed entities). |
+| `sensor.ha_auto_updater_auto_updater_pending_updates` | Number of updates currently available. Updates every 30 minutes automatically. Attributes: `updates` (each pending update with source `HA System` / `Add-on` / `HACS` / `Firmware` / `Custom`), `release_notes` (title + URL per update), and `snoozed` (currently snoozed entities). |
 | `sensor.ha_auto_updater_auto_updater_failed_updates` | Number of updates that failed on the last run |
 | `sensor.ha_auto_updater_auto_updater_last_run` | Timestamp of the last update run |
 | `sensor.ha_auto_updater_auto_updater_next_run` | Timestamp of the next scheduled run |
@@ -199,12 +199,27 @@ Use the `ha_auto_updater.snooze_update` service to skip a specific update for a 
 
 Every 30 minutes, a lightweight scan checks all `update.*` entities and updates the pending count sensor. This keeps the count current between scheduled runs without installing anything.
 
+### Home Assistant's Native "Update All" Button
+
+Starting in recent HA releases, the **Settings → Updates** page groups updates into cards (Core, Integrations, Apps, Device firmware) and includes an **Update All** button. HA Auto Updater and this button coexist safely — they both call the same underlying `update.install` service — but they serve different purposes:
+
+| HA's Update All | HA Auto Updater |
+|-----------------|-----------------|
+| Manual, one-click | Fully automated on a schedule |
+| No backup before installing | Optional backup before installing |
+| No filtering (installs everything) | Filters major bumps, betas, excluded entities, snoozed items |
+| No notifications or history | Rich notifications, run history, weekly digest |
+| No retry on failure | Automatic retry + failure escalation alerts |
+
+If you use both, avoid running them simultaneously — click **Scan for Updates** first to make sure Auto Updater isn't already mid-run (`last_run_status` shows `Running`).
+
 ### System Update Handling
 
 Home Assistant Core, Supervisor, and Operating System updates are treated differently from other updates:
 
 - They **always bypass the major version filter** — HA uses calendar versioning (e.g. `2026.4.0`) which would otherwise be incorrectly flagged as a major bump.
 - They use **non-blocking service calls** — the Supervisor and OS updates trigger a restart mid-install, which would cause a blocking call to time out. Non-blocking calls handle this correctly.
+- Entities with **`auto_update: true`** are skipped automatically — if HA (or another tool) is already managing an update natively, Auto Updater steps aside to avoid conflicts. This is logged at debug level.
 
 ### Notification Restoration
 
