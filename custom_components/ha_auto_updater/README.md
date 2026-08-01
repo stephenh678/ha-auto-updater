@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, and full dashboard control.
 
-> **Version:** 1.1.3 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.1.4 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
