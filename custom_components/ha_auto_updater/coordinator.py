@@ -250,6 +250,14 @@ class AutoUpdaterCoordinator:
                         entity.entity_id, self._snoozed.get(entity.entity_id),
                     )
                 continue
+            if entity.attributes.get("in_progress", False):
+                if log_skips:
+                    _LOGGER.info(
+                        "Auto Updater: skipping %s — install already in progress "
+                        "(likely started elsewhere, e.g. HA's Update All).",
+                        entity.entity_id,
+                    )
+                continue
             attrs = entity.attributes
             latest = attrs.get("latest_version", "")
             if (
@@ -276,6 +284,21 @@ class AutoUpdaterCoordinator:
             available.append(entity)
         return available
 
+    def _build_pending_list(self, available: list) -> list[dict]:
+        """Build the pending_updates list-of-dicts shared by scan and run."""
+        return [
+            {
+                "title": e.attributes.get("title") or e.entity_id,
+                "installed_version": e.attributes.get("installed_version", "?"),
+                "latest_version": e.attributes.get("latest_version", "?"),
+                "entity_id": e.entity_id,
+                "source": self._get_update_source(e.entity_id),
+                "release_url": e.attributes.get("release_url"),
+                "release_summary": e.attributes.get("release_summary"),
+            }
+            for e in available
+        ]
+
     # ------------------------------------------------------------------
     # Background pending-update scan (read-only, no installs)
     # ------------------------------------------------------------------
@@ -289,18 +312,7 @@ class AutoUpdaterCoordinator:
         available = self._filter_available_updates(log_skips=False)
 
         self.pending_count = len(available)
-        self.pending_updates = [
-            {
-                "title": e.attributes.get("title") or e.entity_id,
-                "installed_version": e.attributes.get("installed_version", "?"),
-                "latest_version": e.attributes.get("latest_version", "?"),
-                "entity_id": e.entity_id,
-                "source": self._get_update_source(e.entity_id),
-                "release_url": e.attributes.get("release_url"),
-                "release_summary": e.attributes.get("release_summary"),
-            }
-            for e in available
-        ]
+        self.pending_updates = self._build_pending_list(available)
         _LOGGER.debug("Auto Updater: scan found %d pending update(s).", self.pending_count)
         self._notify_listeners()
 
@@ -377,18 +389,7 @@ class AutoUpdaterCoordinator:
             available = available[:max_updates]
 
         self.pending_count = len(available)
-        self.pending_updates = [
-            {
-                "title": e.attributes.get("title") or e.entity_id,
-                "installed_version": e.attributes.get("installed_version", "?"),
-                "latest_version": e.attributes.get("latest_version", "?"),
-                "entity_id": e.entity_id,
-                "source": self._get_update_source(e.entity_id),
-                "release_url": e.attributes.get("release_url"),
-                "release_summary": e.attributes.get("release_summary"),
-            }
-            for e in available
-        ]
+        self.pending_updates = self._build_pending_list(available)
         self._notify_listeners()
 
         # --- 2. Nothing to do ---
@@ -534,7 +535,7 @@ class AutoUpdaterCoordinator:
         self.last_run = run_end
         self.last_run_count = len(updated_items)
         self.last_run_failed = len(failed_names)
-        self.last_run_status = self._derive_status(len(updated_items), len(failed_names), "")
+        self.last_run_status = self._derive_status(len(updated_items), len(failed_names))
         self.pending_count = len(failed_names)
         self.pending_updates = [u for u in self.pending_updates if u["title"] in failed_names]
         self.failed_updates = [
@@ -790,7 +791,7 @@ class AutoUpdaterCoordinator:
                     ]
                     # Restore last_run_status
                     self.last_run_status = self._derive_status(
-                        self.last_run_count, self.last_run_failed, last.get("note", "")
+                        self.last_run_count, self.last_run_failed
                     )
                     _LOGGER.info(
                         "Auto Updater: last run restored as %s (%d updated, %d failed, status=%s)",
@@ -1128,7 +1129,7 @@ class AutoUpdaterCoordinator:
         return count
 
     @staticmethod
-    def _derive_status(updated: int, failed: int, note: str) -> str:  # noqa: ARG004
+    def _derive_status(updated: int, failed: int) -> str:
         """Return a human-readable status string for a completed run."""
         if updated == 0 and failed == 0:
             return "No updates"

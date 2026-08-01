@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, and full dashboard control.
 
-> **Version:** 1.1.2 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.1.3 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -27,6 +27,7 @@ A custom Home Assistant integration that automatically installs available update
 - **Long-term statistics** — pending, failed, last-run-count, and run-duration sensors participate in HA's built-in statistics tracking
 - **Install timeout & retry** — each update gets a 5-minute timeout and one automatic retry (retry delay is configurable); a stuck install no longer blocks the rest of the queue
 - **Atomic history writes** — history file is written safely so a crash mid-save cannot corrupt it
+- **Concurrent-install safe** — automatically skips any update already mid-install (e.g. started manually or via HA's Update All button) instead of conflicting with it
 
 ---
 
@@ -195,6 +196,8 @@ When **Auto-Purge Old Backups** is enabled, after each new pre-update backup the
 
 Use the `ha_auto_updater.snooze_update` service to skip a specific update for a number of days — handy when a release is known-buggy and you want to wait for a patch without permanently excluding the component. Snoozes persist across restarts and appear in the pending sensor's `snoozed` attribute. Clear them with `ha_auto_updater.clear_snooze`.
 
+This is different from Home Assistant's own built-in **Skip** button (visible on each update entity), which permanently ignores that specific version until a newer one is released. Skip is manual and permanent; snooze is time-boxed and set by Auto Updater. Both are respected — a skipped update's state goes to `off` so it's automatically excluded from Auto Updater's scan too, no extra configuration needed.
+
 ### Background Scan
 
 Every 30 minutes, a lightweight scan checks all `update.*` entities and updates the pending count sensor. This keeps the count current between scheduled runs without installing anything.
@@ -219,6 +222,7 @@ Home Assistant Core, Supervisor, and Operating System updates are treated differ
 
 - They **always bypass the major version filter** — HA uses calendar versioning (e.g. `2026.4.0`) which would otherwise be incorrectly flagged as a major bump.
 - They use **non-blocking service calls** — the Supervisor and OS updates trigger a restart mid-install, which would cause a blocking call to time out. Non-blocking calls handle this correctly.
+- Any update entity already mid-install (`in_progress` is `True`) is skipped for that scan or run — this prevents a conflict if you also triggered an install manually or via HA's Update All button while Auto Updater is running.
 
 ### Notification Restoration
 
@@ -243,6 +247,19 @@ Persistent notifications appear in the HA notification panel in the following si
 | Auto Restart switched on | Reminder that HA may restart after updates |
 | Debug Logging switched on | Reminder to turn off when done |
 | Weekly Digest switched on | Confirms weekly summaries are enabled |
+
+---
+
+## Dashboard Card Example
+
+Want a simple card on your dashboard instead of digging through **Settings → Devices & Services**? Two ready-to-paste examples live in [`examples/`](../../examples) — both use only built-in HA card types, no HACS frontend cards required:
+
+- [`examples/dashboard-card.yaml`](../../examples/dashboard-card.yaml) — an entities card showing status, the master switch, and both action buttons
+- [`examples/dashboard-button.yaml`](../../examples/dashboard-button.yaml) — a single standalone "Run Updates Now" button with a confirmation prompt
+
+**To add either one:** go to **Settings → Dashboards → Edit Dashboard → Add Card**, scroll to the bottom of the card-type list, choose **Manual**, and paste the YAML in.
+
+These are intentionally minimal. If you want the fuller popup-style card with live pending-updates list and run history (the kind shown in this repo's own screenshots), see the more advanced layout using `custom:mushroom-template-card` and `browser_mod` — those are separate HACS frontend add-ons, not required by the integration itself.
 
 ---
 

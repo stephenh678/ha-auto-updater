@@ -1,0 +1,19 @@
+# HA Auto Updater — Standalone "Run Updates Now" Button
+#
+# A single tap-to-run button with a confirmation prompt, styled to match
+# the built-in HA "button" card. No HACS frontend cards required.
+# To add: Settings → Dashboards → Edit Dashboard → Add Card → scroll to bottom →
+# "Manual" (YAML editor) → paste this in.
+
+type: button
+entity: button.ha_auto_updater_run_updates_now
+name: Run Updates Now
+icon: mdi:update
+show_state: false
+tap_action:
+  action: call-service
+  service: button.press
+  target:
+    entity_id: button.ha_auto_updater_run_updates_now
+  confirmation:
+    text: Run all available updates now?

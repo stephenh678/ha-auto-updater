@@ -71,6 +71,7 @@ A few quick pointers:
 - **"How often to check for updates" is not a backup schedule** — it controls how often Auto Updater *looks for and installs* updates. Backups only happen as a step inside an actual install.
 - Snooze an update: call `ha_auto_updater.snooze_update` with an `entity_id` and optional `days`.
 - All feature toggles (backup, auto-purge, notifications, etc.) are switches on the device page; scheduling/limits are in the integration's **Configure** dialog.
+- Want a dashboard card? See [`examples/`](examples) for copy-paste-ready YAML (entities card + a standalone button), no HACS frontend cards required.
 
 ---
 

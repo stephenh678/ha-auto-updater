@@ -1,0 +1,22 @@
+# HA Auto Updater — Simple Dashboard Card
+#
+# Uses only built-in Home Assistant card types (no HACS frontend cards required).
+# To add: Settings → Dashboards → Edit Dashboard → Add Card → scroll to bottom →
+# "Manual" (YAML editor) → paste this in.
+
+type: entities
+title: HA Auto Updater
+show_header_toggle: false
+entities:
+  - entity: sensor.ha_auto_updater_auto_updater_pending_updates
+    name: Pending Updates
+  - entity: sensor.ha_auto_updater_auto_updater_last_run_status
+    name: Last Run Status
+  - entity: sensor.ha_auto_updater_auto_updater_next_run
+    name: Next Scheduled Run
+  - entity: switch.ha_auto_updater_auto_updater
+    name: Auto Updates Enabled
+  - entity: button.ha_auto_updater_run_updates_now
+    name: Run Updates Now
+  - entity: button.ha_auto_updater_scan_for_updates
+    name: Scan for Updates
