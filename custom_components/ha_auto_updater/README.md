@@ -224,6 +224,20 @@ Home Assistant Core, Supervisor, and Operating System updates are treated differ
 - They use **non-blocking service calls** — the Supervisor and OS updates trigger a restart mid-install, which would cause a blocking call to time out. Non-blocking calls handle this correctly.
 - Any update entity already mid-install (`in_progress` is `True`) is skipped for that scan or run — this prevents a conflict if you also triggered an install manually or via HA's Update All button while Auto Updater is running.
 
+### Host Reboots Are Not Automated (By Design)
+
+Some updates — most notably **Home Assistant OS** — require a full **host reboot** (the entire machine, not just the HA Core process) to finish applying. This is a Supervisor-level concept, separate from the per-update `restart_required` attribute Auto Updater already handles automatically via **Auto Restart**.
+
+Auto Updater does **not** detect or trigger host reboots, and this is intentional:
+
+- The Supervisor's actual `reboot_required` flag is only exposed through Supervisor's own internal API, which is not reachable from a standard Core integration or long-lived access token (confirmed: the endpoint returns `401 Unauthorized` outside Supervisor-level auth).
+- The one precise signal we could detect — Home Assistant OS updates no longer auto-reboot the host after install ([home-assistant/supervisor#6978](https://github.com/home-assistant/supervisor/issues/6978), [home-assistant/core#175140](https://github.com/home-assistant/core/pull/175140)) — only covers OS updates. Supervisor and add-on updates can also occasionally require a host reboot for other reasons Core has no visibility into, so a partial signal risks giving false confidence.
+- A host reboot is more disruptive than a Core restart (brief full outage of add-ons, Docker, and networking), so it shouldn't be triggered automatically on an incomplete signal.
+
+**If you see a "Reboot required" notification** (shown by Supervisor, separate from Auto Updater's own notifications), reboot manually via **Settings → System → Hardware → ⋮ → Reboot Host**.
+
+See [issue #1](https://github.com/stephenh678/ha-auto-updater/issues/1) for the full investigation and reasoning behind this decision.
+
 ### Notification Restoration
 
 If HA restarts within 2 hours of a completed update run, any persistent notifications from that run are automatically re-posted with a *(Restored after restart)* note, so you don't miss update results.
