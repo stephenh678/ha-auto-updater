@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, and full dashboard control.
 
-> **Version:** 1.1.1 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.1.2 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -219,7 +219,6 @@ Home Assistant Core, Supervisor, and Operating System updates are treated differ
 
 - They **always bypass the major version filter** — HA uses calendar versioning (e.g. `2026.4.0`) which would otherwise be incorrectly flagged as a major bump.
 - They use **non-blocking service calls** — the Supervisor and OS updates trigger a restart mid-install, which would cause a blocking call to time out. Non-blocking calls handle this correctly.
-- Entities with **`auto_update: true`** are skipped automatically — if HA (or another tool) is already managing an update natively, Auto Updater steps aside to avoid conflicts. This is logged at debug level.
 
 ### Notification Restoration
 

@@ -243,13 +243,6 @@ class AutoUpdaterCoordinator:
                 if log_skips:
                     _LOGGER.debug("Auto Updater: skipping excluded %s", entity.entity_id)
                 continue
-            # Skip entities HA is already managing natively (e.g. Supervisor auto-update enabled)
-            if entity.attributes.get("auto_update", False):
-                _LOGGER.debug(
-                    "Auto Updater: skipping %s — auto_update=True (HA manages it natively)",
-                    entity.entity_id,
-                )
-                continue
             if self._is_snoozed(entity.entity_id):
                 if log_skips:
                     _LOGGER.info(
