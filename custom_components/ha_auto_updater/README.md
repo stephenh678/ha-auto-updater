@@ -202,6 +202,13 @@ custom_components/ha_auto_updater/
 
 ---
 
+## Contributors
+
+- [@stephenh678](https://github.com/stephenh678) — Author & Lead Maintainer
+- **Antigravity AI** — AI Coding Assistant & Co-Developer (Google DeepMind)
+
+---
+
 ## License
 
 Released under the [MIT License](../../LICENSE).

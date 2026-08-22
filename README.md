@@ -76,6 +76,13 @@ Full configuration options, every entity, service, event hook, and troubleshooti
 
 Issues and pull requests are welcome. Please use the [issue tracker](https://github.com/stephenh678/ha-auto-updater/issues) for bugs and feature requests.
 
+## Contributors
+
+- [@stephenh678](https://github.com/stephenh678) — Author & Lead Maintainer
+- **Antigravity AI** — AI Coding Assistant & Co-Developer (Google DeepMind)
+
+---
+
 ## License
 
 Released under the [MIT License](LICENSE).
