@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -33,6 +34,7 @@ async def async_setup_entry(
 # ---------------------------------------------------------------------------
 
 class _BaseAutoUpdaterSensor(SensorEntity):
+    _attr_has_entity_name = True
     _attr_should_poll = False
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
@@ -68,7 +70,7 @@ class PendingUpdatesSensor(_BaseAutoUpdaterSensor):
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Pending Updates"
+        self._attr_name = "Pending updates"
         self._attr_unique_id = f"{entry.entry_id}_pending_updates"
 
     @property
@@ -101,10 +103,11 @@ class LastRunSensor(_BaseAutoUpdaterSensor):
 
     _attr_icon = "mdi:clock-check-outline"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Last Run"
+        self._attr_name = "Last run"
         self._attr_unique_id = f"{entry.entry_id}_last_run"
 
     @property
@@ -118,10 +121,11 @@ class LastRunCountSensor(_BaseAutoUpdaterSensor):
     _attr_icon = "mdi:counter"
     _attr_native_unit_of_measurement = "updates"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Last Run Count"
+        self._attr_name = "Last run count"
         self._attr_unique_id = f"{entry.entry_id}_last_run_count"
 
     @property
@@ -140,7 +144,7 @@ class LastRunStatusSensor(_BaseAutoUpdaterSensor):
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Last Run Status"
+        self._attr_name = "Last run status"
         self._attr_unique_id = f"{entry.entry_id}_last_run_status"
 
     @property
@@ -167,10 +171,11 @@ class LastRunDurationSensor(_BaseAutoUpdaterSensor):
     _attr_icon = "mdi:timer-outline"
     _attr_native_unit_of_measurement = "s"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Last Run Duration"
+        self._attr_name = "Last run duration"
         self._attr_unique_id = f"{entry.entry_id}_last_run_duration"
 
     @property
@@ -183,10 +188,11 @@ class UpdateHistorySensor(_BaseAutoUpdaterSensor):
 
     _attr_icon = "mdi:history"
     _attr_native_unit_of_measurement = "runs"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater History"
+        self._attr_name = "History"
         self._attr_unique_id = f"{entry.entry_id}_history"
 
     @property
@@ -216,10 +222,11 @@ class NextScheduledRunSensor(_BaseAutoUpdaterSensor):
 
     _attr_icon = "mdi:calendar-clock"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Next Run"
+        self._attr_name = "Next run"
         self._attr_unique_id = f"{entry.entry_id}_next_run"
 
     @property
@@ -233,10 +240,11 @@ class FailedUpdatesSensor(_BaseAutoUpdaterSensor):
     _attr_icon = "mdi:alert-circle-outline"
     _attr_native_unit_of_measurement = "updates"
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
-        self._attr_name = "Auto Updater Failed Updates"
+        self._attr_name = "Failed updates"
         self._attr_unique_id = f"{entry.entry_id}_failed_updates"
 
     @property

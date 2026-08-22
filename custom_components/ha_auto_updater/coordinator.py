@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timedelta
 
+from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
 from homeassistant.components.persistent_notification import async_create
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -17,6 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     BACKUP_STATE_FILE,
+    CONF_AUTO_QUARANTINE,
     CONF_AUTO_RESTART,
     CONF_BACKUP_BEFORE_UPDATE,
     CONF_BACKUP_CLEANUP,
@@ -28,6 +31,7 @@ from .const import (
     CONF_FREQUENCY,
     CONF_INCLUDE_MAJOR,
     CONF_MAX_UPDATES_PER_RUN,
+    CONF_MIN_DISK_SPACE_GB,
     CONF_NOTIFY_FAILURE,
     CONF_NOTIFY_ON_NEW_UPDATES,
     CONF_NOTIFY_SERVICE,
@@ -37,8 +41,13 @@ from .const import (
     CONF_SKIP_BETA,
     CONF_STAGGER_DELAY,
     CONF_TIME_OF_DAY,
+    CONF_UPDATE_ADDONS,
+    CONF_UPDATE_FIRMWARE,
+    CONF_UPDATE_HACS,
+    CONF_UPDATE_SYSTEM,
     CONF_WEEKLY_DIGEST,
     DAYS_OF_WEEK,
+    DEFAULT_AUTO_QUARANTINE,
     DEFAULT_AUTO_RESTART,
     DEFAULT_BACKUP_BEFORE_UPDATE,
     DEFAULT_BACKUP_CLEANUP,
@@ -50,6 +59,7 @@ from .const import (
     DEFAULT_FREQUENCY,
     DEFAULT_INCLUDE_MAJOR,
     DEFAULT_MAX_UPDATES_PER_RUN,
+    DEFAULT_MIN_DISK_SPACE_GB,
     DEFAULT_NOTIFY_FAILURE,
     DEFAULT_NOTIFY_ON_NEW_UPDATES,
     DEFAULT_NOTIFY_SERVICE,
@@ -60,8 +70,17 @@ from .const import (
     DEFAULT_SNOOZE_DAYS,
     DEFAULT_STAGGER_DELAY,
     DEFAULT_TIME_OF_DAY,
+    DEFAULT_UPDATE_ADDONS,
+    DEFAULT_UPDATE_FIRMWARE,
+    DEFAULT_UPDATE_HACS,
+    DEFAULT_UPDATE_SYSTEM,
     DEFAULT_WEEKLY_DIGEST,
     DIGEST_STATE_FILE,
+    EVENT_BACKUP_COMPLETE,
+    EVENT_BACKUP_START,
+    EVENT_ITEM_COMPLETE,
+    EVENT_RUN_FINISHED,
+    EVENT_UPDATE_START,
     FAILURE_ESCALATION_THRESHOLD,
     FREQ_HOURLY,
     FREQ_WEEKLY,
@@ -83,6 +102,7 @@ _PRERELEASE_RE = re.compile(r"(b\d+|\.beta|rc\d*|\.dev|alpha)", re.IGNORECASE)
 _HA_SYSTEM_UPDATE_ENTITIES = {
     "update.home_assistant_supervisor",
     "update.home_assistant_operating_system",
+    "update.home_assistant_core",
     "update.home_assistant_core_update",
 }
 
@@ -135,6 +155,9 @@ class AutoUpdaterCoordinator:
     # ------------------------------------------------------------------
 
     async def async_setup(self) -> None:
+        if self._unsub_scan is not None:
+            self._unsub_scan()
+            self._unsub_scan = None
         self._apply_log_level()
         await self._load_history()
         await self._load_digest_state()
@@ -220,8 +243,18 @@ class AutoUpdaterCoordinator:
         await self._async_reschedule()
 
     # ------------------------------------------------------------------
-    # Shared update filter
+    # Shared update filter & safety guards
     # ------------------------------------------------------------------
+
+    def _check_disk_space(self, min_gb: float) -> tuple[bool, float]:
+        """Check available disk space in config dir. Return (is_ok, free_gb)."""
+        try:
+            total, used, free = shutil.disk_usage(self.hass.config.config_dir)
+            free_gb = round(free / (1024 ** 3), 2)
+            return free_gb >= min_gb, free_gb
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("Auto Updater: disk space check error — %s", exc)
+            return True, 999.0
 
     def _filter_available_updates(self, log_skips: bool = False) -> list:
         """Return all update entities that pass the current filter settings.
@@ -234,6 +267,10 @@ class AutoUpdaterCoordinator:
         excluded: list[str] = self.options.get(CONF_EXCLUDED_ENTITIES, DEFAULT_EXCLUDED_ENTITIES)
         include_major: bool = self.options.get(CONF_INCLUDE_MAJOR, DEFAULT_INCLUDE_MAJOR)
         skip_beta: bool = self.options.get(CONF_SKIP_BETA, DEFAULT_SKIP_BETA)
+        update_addons: bool = self.options.get(CONF_UPDATE_ADDONS, DEFAULT_UPDATE_ADDONS)
+        update_hacs: bool = self.options.get(CONF_UPDATE_HACS, DEFAULT_UPDATE_HACS)
+        update_firmware: bool = self.options.get(CONF_UPDATE_FIRMWARE, DEFAULT_UPDATE_FIRMWARE)
+        update_system: bool = self.options.get(CONF_UPDATE_SYSTEM, DEFAULT_UPDATE_SYSTEM)
 
         available = []
         for entity in self.hass.states.async_all("update"):
@@ -258,6 +295,25 @@ class AutoUpdaterCoordinator:
                         entity.entity_id,
                     )
                 continue
+
+            source = self._get_update_source(entity.entity_id)
+            if source == "Add-on" and not update_addons:
+                if log_skips:
+                    _LOGGER.info("Auto Updater: skipping Add-on %s (Add-on updates disabled)", entity.entity_id)
+                continue
+            if source == "HACS" and not update_hacs:
+                if log_skips:
+                    _LOGGER.info("Auto Updater: skipping HACS %s (HACS updates disabled)", entity.entity_id)
+                continue
+            if source == "Firmware" and not update_firmware:
+                if log_skips:
+                    _LOGGER.info("Auto Updater: skipping Firmware %s (Firmware updates disabled)", entity.entity_id)
+                continue
+            if source == "HA System" and not update_system:
+                if log_skips:
+                    _LOGGER.info("Auto Updater: skipping System %s (System updates disabled)", entity.entity_id)
+                continue
+
             attrs = entity.attributes
             latest = attrs.get("latest_version", "")
             if (
@@ -289,8 +345,8 @@ class AutoUpdaterCoordinator:
         return [
             {
                 "title": e.attributes.get("title") or e.entity_id,
-                "installed_version": e.attributes.get("installed_version", "?"),
-                "latest_version": e.attributes.get("latest_version", "?"),
+                "installed_version": e.attributes.get("installed_version") or "?",
+                "latest_version": e.attributes.get("latest_version") or "?",
                 "entity_id": e.entity_id,
                 "source": self._get_update_source(e.entity_id),
                 "release_url": e.attributes.get("release_url"),
@@ -313,6 +369,19 @@ class AutoUpdaterCoordinator:
 
         self.pending_count = len(available)
         self.pending_updates = self._build_pending_list(available)
+
+        # Prune items from failed_updates if they have been updated outside Auto Updater
+        if self.failed_updates:
+            still_failed = []
+            for f in self.failed_updates:
+                eid = f.get("entity_id")
+                if eid:
+                    st = self.hass.states.get(eid)
+                    if st is not None and st.state != "on":
+                        continue
+                still_failed.append(f)
+            self.failed_updates = still_failed
+
         _LOGGER.debug("Auto Updater: scan found %d pending update(s).", self.pending_count)
         self._notify_listeners()
 
@@ -366,6 +435,32 @@ class AutoUpdaterCoordinator:
     async def _async_run_updates_inner(self) -> None:
         _LOGGER.info("Auto Updater: checking for available updates…")
 
+        # --- Safe Mode Guard ---
+        if getattr(self.hass.config, "safe_mode", False):
+            _LOGGER.warning("Auto Updater: Home Assistant is running in Safe Mode — aborting update run.")
+            self.last_run_status = "Aborted (Safe Mode)"
+            self._notify_listeners()
+            return
+
+        # --- Disk Space Guard ---
+        min_disk_gb = float(self.options.get(CONF_MIN_DISK_SPACE_GB, DEFAULT_MIN_DISK_SPACE_GB))
+        space_ok, free_gb = self._check_disk_space(min_disk_gb)
+        if not space_ok:
+            _LOGGER.error(
+                "Auto Updater: insufficient disk space (%.2f GB available, %.2f GB required) — aborting update run.",
+                free_gb, min_disk_gb,
+            )
+            self._send_status_notification(
+                "Storage Warning — Run Aborted",
+                "Available disk space ({:.2f} GB) is below the configured minimum ({:.2f} GB). Update run aborted.".format(
+                    free_gb, min_disk_gb
+                ),
+                notification_id="ha_auto_updater_low_storage",
+            )
+            self.last_run_status = "Aborted (Low Storage)"
+            self._notify_listeners()
+            return
+
         backup_enabled: bool = self.options.get(CONF_BACKUP_BEFORE_UPDATE, DEFAULT_BACKUP_BEFORE_UPDATE)
         pre_notify_delay: int = int(self.options.get(CONF_PRE_NOTIFY_DELAY, DEFAULT_PRE_NOTIFY_DELAY))
         stagger_delay: int = int(self.options.get(CONF_STAGGER_DELAY, DEFAULT_STAGGER_DELAY))
@@ -410,15 +505,22 @@ class AutoUpdaterCoordinator:
                 "note": "No updates available",
             })
             self.hass.bus.async_fire(EVENT_RUN_COMPLETE, {"total_updated": 0, "total_failed": 0})
+            self.hass.bus.async_fire(EVENT_RUN_FINISHED, {"total_updated": 0, "total_failed": 0, "duration_seconds": 0})
             self._notify_listeners()
             return
 
         titles = [e.attributes.get("title", e.entity_id) for e in available]
         _LOGGER.info("Auto Updater: %d update(s) available — %s", len(available), titles)
 
+        self.hass.bus.async_fire(
+            EVENT_UPDATE_START,
+            {"available_count": len(available), "titles": titles},
+        )
+
         # --- 3. Backup ---
         if backup_enabled:
             _LOGGER.info("Auto Updater: creating backup before updates…")
+            self.hass.bus.async_fire(EVENT_BACKUP_START, {})
             self._send_status_notification(
                 "Creating backup…",
                 "A backup is being created before installing updates.",
@@ -426,6 +528,7 @@ class AutoUpdaterCoordinator:
             )
             backup_ok = await self._create_backup()
             self._dismiss_notification("ha_auto_updater_backup_progress")
+            self.hass.bus.async_fire(EVENT_BACKUP_COMPLETE, {"success": backup_ok})
             if backup_ok:
                 _LOGGER.info("Auto Updater: backup completed successfully.")
                 self._send_status_notification(
@@ -457,6 +560,7 @@ class AutoUpdaterCoordinator:
         updated_items: list[dict] = []
         failed_names: list[str] = []
         restart_required_map: dict[str, bool] = {}  # title -> requires restart
+        system_updates_triggered = False
 
         # Dismiss pre-update and backup notifications — installs are starting now
         self._dismiss_notification("ha_auto_updater_pre_update")
@@ -507,11 +611,16 @@ class AutoUpdaterCoordinator:
                         "title": title, "from": installed, "to": latest,
                         "release_url": release_url,
                     })
+                    self.hass.bus.async_fire(
+                        EVENT_ITEM_COMPLETE,
+                        {"entity_id": entity_id, "title": title, "success": True, "from": installed, "to": latest},
+                    )
                     _LOGGER.info("Auto Updater: ✓ %s  %s → %s", title, installed, latest)
                     if is_system_update:
+                        system_updates_triggered = True
                         _LOGGER.info(
                             "Auto Updater: %s is a system-level update — install triggered "
-                            "(non-blocking). HA may restart to complete it.",
+                            "(non-blocking). HA or system service may restart natively.",
                             title,
                         )
                     break
@@ -527,6 +636,10 @@ class AutoUpdaterCoordinator:
                             "Auto Updater: ✗ %s failed after retry — %s", title, exc
                         )
                         failed_names.append(title)
+                        self.hass.bus.async_fire(
+                            EVENT_ITEM_COMPLETE,
+                            {"entity_id": entity_id, "title": title, "success": False, "from": installed, "to": latest},
+                        )
 
         # --- 6. Persist results ---
         run_end = dt_util.now()
@@ -569,11 +682,20 @@ class AutoUpdaterCoordinator:
                 "duration_seconds": duration,
             },
         )
+        self.hass.bus.async_fire(
+            EVENT_RUN_FINISHED,
+            {
+                "total_updated": len(updated_items),
+                "total_failed": len(failed_names),
+                "duration_seconds": duration,
+            },
+        )
         self._notify_listeners()
 
-        # --- 7. Notifications ---
+        # --- 7. Notifications & Auto-Quarantine ---
         notify_success: bool = self.options.get(CONF_NOTIFY_SUCCESS, DEFAULT_NOTIFY_SUCCESS)
         notify_failure: bool = self.options.get(CONF_NOTIFY_FAILURE, DEFAULT_NOTIFY_FAILURE)
+        auto_quarantine: bool = self.options.get(CONF_AUTO_QUARANTINE, DEFAULT_AUTO_QUARANTINE)
 
         if updated_items and notify_success:
             self._send_success_notification(updated_items)
@@ -582,18 +704,34 @@ class AutoUpdaterCoordinator:
                 "{} update(s) installed successfully.".format(len(updated_items)),
             )
 
-        if failed_names and notify_failure:
+        if failed_names:
             escalated = [
                 n for n in failed_names
                 if self._consecutive_failures(n) >= FAILURE_ESCALATION_THRESHOLD
             ]
-            self._send_failure_notification(failed_names, escalated)
-            push_msg = "{} update(s) failed: {}".format(len(failed_names), ", ".join(failed_names))
-            if escalated:
-                push_msg += "\n⚠️ Repeatedly failing ({}+ runs): {}".format(
-                    FAILURE_ESCALATION_THRESHOLD, ", ".join(escalated)
-                )
-            self._send_push_notification("Update Failures", push_msg)
+
+            if notify_failure:
+                self._send_failure_notification(failed_names, escalated)
+                push_msg = "{} update(s) failed: {}".format(len(failed_names), ", ".join(failed_names))
+                if escalated:
+                    push_msg += "\n⚠️ Repeatedly failing ({}+ runs): {}".format(
+                        FAILURE_ESCALATION_THRESHOLD, ", ".join(escalated)
+                    )
+                self._send_push_notification("Update Failures", push_msg)
+
+            # Auto-quarantine repeatedly failing entities
+            if auto_quarantine and escalated:
+                for f_name in escalated:
+                    f_eid = next(
+                        (e.entity_id for e in available if (e.attributes.get("title") or e.entity_id) == f_name),
+                        None,
+                    )
+                    if f_eid:
+                        _LOGGER.warning(
+                            "Auto Updater: auto-quarantining %s (%s) after %d consecutive failures — snoozing for 7 days.",
+                            f_name, f_eid, FAILURE_ESCALATION_THRESHOLD,
+                        )
+                        await self.async_snooze_update(f_eid, 7)
 
         # --- 8. Restart HA if enabled and any installed update requires it ---
         auto_restart: bool = self.options.get(CONF_AUTO_RESTART, DEFAULT_AUTO_RESTART)
@@ -605,7 +743,13 @@ class AutoUpdaterCoordinator:
             ) not in _HA_SYSTEM_UPDATE_ENTITIES
         ]
         needs_restart = any(restart_required_map.get(u["title"], True) for u in non_system_updates)
-        if auto_restart and non_system_updates and needs_restart:
+
+        if system_updates_triggered:
+            _LOGGER.info(
+                "Auto Updater: system-level update (OS/Supervisor/Core) was triggered in this run. "
+                "Skipping explicit HA restart call so the system update process completes natively."
+            )
+        elif auto_restart and non_system_updates and needs_restart:
             _LOGGER.info(
                 "Auto Updater: restarting HA — %d non-system update(s) require a restart.",
                 len(non_system_updates),
@@ -1052,7 +1196,12 @@ class AutoUpdaterCoordinator:
         if not until:
             return False
         dt = dt_util.parse_datetime(until)
-        if dt is None or dt <= dt_util.now():
+        if dt is None:
+            self._snoozed.pop(entity_id, None)
+            return False
+        if dt.tzinfo is None:
+            dt = dt_util.as_utc(dt)
+        if dt <= dt_util.now():
             self._snoozed.pop(entity_id, None)  # expired — lazy cleanup
             return False
         return True
@@ -1063,7 +1212,11 @@ class AutoUpdaterCoordinator:
         out = []
         for eid, until in self._snoozed.items():
             dt = dt_util.parse_datetime(until)
-            if dt is not None and dt > now:
+            if dt is None:
+                continue
+            if dt.tzinfo is None:
+                dt = dt_util.as_utc(dt)
+            if dt > now:
                 out.append({"entity_id": eid, "until": until})
         return out
 
@@ -1141,11 +1294,26 @@ class AutoUpdaterCoordinator:
 
     @staticmethod
     def _is_major_bump(attrs: dict) -> bool:
+        inst_str = attrs.get("installed_version")
+        late_str = attrs.get("latest_version")
+        if not inst_str or not late_str or str(inst_str) in ("?", "") or str(late_str) in ("?", ""):
+            return False
         try:
-            installed = str(attrs.get("installed_version", "0")).split(".")[0]
-            latest = str(attrs.get("latest_version", "0")).split(".")[0]
-            # Calendar versioning (major >= 2000 means it's a year, e.g. 2026.03.3).
-            # Year-to-year increments are routine releases — never treat as major bump.
+            inst_ver = AwesomeVersion(str(inst_str))
+            late_ver = AwesomeVersion(str(late_str))
+            # Calendar versioning (year >= 2000, e.g. 2026.3.0).
+            # Year-to-year increments are routine HA releases — never treat as major bump.
+            if late_ver.strategy == AwesomeVersionStrategy.CALVER or (late_ver.section(0) and late_ver.section(0) >= 2000):
+                return False
+            if late_ver.section(0) is not None and inst_ver.section(0) is not None:
+                return int(late_ver.section(0)) > int(inst_ver.section(0))
+        except Exception:
+            pass
+
+        # Fallback to string split logic stripping leading 'v'
+        try:
+            installed = str(inst_str).lstrip("vV").split(".")[0]
+            latest = str(late_str).lstrip("vV").split(".")[0]
             if int(latest) >= 2000:
                 return False
             return int(latest) > int(installed)
@@ -1154,6 +1322,14 @@ class AutoUpdaterCoordinator:
 
     @staticmethod
     def _is_prerelease(version: str) -> bool:
+        if not version or str(version) in ("?", ""):
+            return False
+        try:
+            ver = AwesomeVersion(str(version))
+            if ver.modifier is not None or ver.modifier_type is not None:
+                return True
+        except Exception:
+            pass
         return bool(_PRERELEASE_RE.search(str(version)))
 
     # ------------------------------------------------------------------

@@ -1,13 +1,15 @@
 """Switch entities for HA Auto Updater."""
 from __future__ import annotations
 
-from homeassistant.components.persistent_notification import async_create
+from homeassistant.components.persistent_notification import async_create, async_dismiss
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_AUTO_QUARANTINE,
     CONF_AUTO_RESTART,
     CONF_BACKUP_BEFORE_UPDATE,
     CONF_BACKUP_CLEANUP,
@@ -18,8 +20,13 @@ from .const import (
     CONF_NOTIFY_ON_NEW_UPDATES,
     CONF_NOTIFY_SUCCESS,
     CONF_SKIP_BETA,
+    CONF_UPDATE_ADDONS,
+    CONF_UPDATE_FIRMWARE,
+    CONF_UPDATE_HACS,
+    CONF_UPDATE_SYSTEM,
     CONF_WEEKLY_DIGEST,
     DATA_COORDINATOR,
+    DEFAULT_AUTO_QUARANTINE,
     DEFAULT_AUTO_RESTART,
     DEFAULT_BACKUP_BEFORE_UPDATE,
     DEFAULT_BACKUP_CLEANUP,
@@ -30,6 +37,10 @@ from .const import (
     DEFAULT_NOTIFY_ON_NEW_UPDATES,
     DEFAULT_NOTIFY_SUCCESS,
     DEFAULT_SKIP_BETA,
+    DEFAULT_UPDATE_ADDONS,
+    DEFAULT_UPDATE_FIRMWARE,
+    DEFAULT_UPDATE_HACS,
+    DEFAULT_UPDATE_SYSTEM,
     DEFAULT_WEEKLY_DIGEST,
     DOMAIN,
 )
@@ -52,6 +63,11 @@ async def async_setup_entry(
             NotifyFailureSwitch(coordinator, entry),
             WeeklyDigestSwitch(coordinator, entry),
             NotifyOnNewUpdatesSwitch(coordinator, entry),
+            UpdateAddonsSwitch(coordinator, entry),
+            UpdateHacsSwitch(coordinator, entry),
+            UpdateFirmwareSwitch(coordinator, entry),
+            UpdateSystemSwitch(coordinator, entry),
+            AutoQuarantineSwitch(coordinator, entry),
         ]
     )
 
@@ -63,6 +79,7 @@ async def async_setup_entry(
 class _FeatureSwitch(SwitchEntity):
     """Base for all Auto Updater feature toggle switches."""
 
+    _attr_has_entity_name = True
     _attr_should_poll = False
     _conf_key: str
     _default: bool
@@ -71,7 +88,7 @@ class _FeatureSwitch(SwitchEntity):
         self,
         coordinator: AutoUpdaterCoordinator,
         entry: ConfigEntry,
-        name: str,
+        name: str | None,
         unique_suffix: str,
         icon: str,
     ) -> None:
@@ -93,7 +110,7 @@ class _FeatureSwitch(SwitchEntity):
 
     @property
     def is_on(self) -> bool:
-        return self._coordinator.options.get(self._conf_key, self._default)
+        return bool(self._entry.options.get(self._conf_key, self._default))
 
     async def async_turn_on(self, **kwargs) -> None:
         await self._set_value(True)
@@ -119,13 +136,7 @@ def _notify(hass, notification_id: str, title: str, message: str) -> None:
     async_create(hass, message, title=f"Auto Updater — {title}", notification_id=notification_id)
 
 def _dismiss(hass, notification_id: str) -> None:
-    hass.async_create_task(
-        hass.services.async_call(
-            "persistent_notification",
-            "dismiss",
-            {"notification_id": notification_id},
-        )
-    )
+    async_dismiss(hass, notification_id)
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +172,7 @@ class BackupSwitch(_FeatureSwitch):
 
     _conf_key = CONF_BACKUP_BEFORE_UPDATE
     _default = DEFAULT_BACKUP_BEFORE_UPDATE
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Backup Before Updating", "backup_switch", "mdi:backup-restore")
@@ -183,6 +195,7 @@ class BackupCleanupSwitch(_FeatureSwitch):
 
     _conf_key = CONF_BACKUP_CLEANUP
     _default = DEFAULT_BACKUP_CLEANUP
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Auto-Purge Old Backups", "backup_cleanup_switch", "mdi:delete-clock")
@@ -208,6 +221,7 @@ class AutoRestartSwitch(_FeatureSwitch):
 
     _conf_key = CONF_AUTO_RESTART
     _default = DEFAULT_AUTO_RESTART
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Restart After Updates", "auto_restart_switch", "mdi:restart")
@@ -231,6 +245,7 @@ class SkipBetaSwitch(_FeatureSwitch):
 
     _conf_key = CONF_SKIP_BETA
     _default = DEFAULT_SKIP_BETA
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Skip Beta/RC Versions", "skip_beta_switch", "mdi:flask-off")
@@ -241,6 +256,7 @@ class DebugLoggingSwitch(_FeatureSwitch):
 
     _conf_key = CONF_DEBUG
     _default = DEFAULT_DEBUG
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Debug Logging", "debug_switch", "mdi:bug")
@@ -264,6 +280,7 @@ class NotifySuccessSwitch(_FeatureSwitch):
 
     _conf_key = CONF_NOTIFY_SUCCESS
     _default = DEFAULT_NOTIFY_SUCCESS
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Notify on Success", "notify_success_switch", "mdi:bell-check")
@@ -274,6 +291,7 @@ class NotifyFailureSwitch(_FeatureSwitch):
 
     _conf_key = CONF_NOTIFY_FAILURE
     _default = DEFAULT_NOTIFY_FAILURE
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Notify on Failure", "notify_failure_switch", "mdi:bell-alert")
@@ -284,6 +302,7 @@ class WeeklyDigestSwitch(_FeatureSwitch):
 
     _conf_key = CONF_WEEKLY_DIGEST
     _default = DEFAULT_WEEKLY_DIGEST
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Weekly Digest", "weekly_digest_switch", "mdi:calendar-week")
@@ -305,6 +324,62 @@ class NotifyOnNewUpdatesSwitch(_FeatureSwitch):
 
     _conf_key = CONF_NOTIFY_ON_NEW_UPDATES
     _default = DEFAULT_NOTIFY_ON_NEW_UPDATES
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Notify on New Updates", "notify_new_updates_switch", "mdi:bell-plus")
+
+
+class UpdateAddonsSwitch(_FeatureSwitch):
+    """Include Home Assistant Add-ons in automatic updates."""
+
+    _conf_key = CONF_UPDATE_ADDONS
+    _default = DEFAULT_UPDATE_ADDONS
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "Auto-Update Add-ons", "update_addons_switch", "mdi:puzzle-edit")
+
+
+class UpdateHacsSwitch(_FeatureSwitch):
+    """Include HACS custom integrations and components in automatic updates."""
+
+    _conf_key = CONF_UPDATE_HACS
+    _default = DEFAULT_UPDATE_HACS
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "Auto-Update HACS Integrations", "update_hacs_switch", "mdi:package-variant-closed")
+
+
+class UpdateFirmwareSwitch(_FeatureSwitch):
+    """Include device firmware updates (ESPHome, Z-Wave JS, Matter, etc.) in automatic updates."""
+
+    _conf_key = CONF_UPDATE_FIRMWARE
+    _default = DEFAULT_UPDATE_FIRMWARE
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "Auto-Update Device Firmware", "update_firmware_switch", "mdi:chip")
+
+
+class UpdateSystemSwitch(_FeatureSwitch):
+    """Include Home Assistant Core, OS, and Supervisor in automatic updates."""
+
+    _conf_key = CONF_UPDATE_SYSTEM
+    _default = DEFAULT_UPDATE_SYSTEM
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "Auto-Update Core & OS", "update_system_switch", "mdi:home-assistant")
+
+
+class AutoQuarantineSwitch(_FeatureSwitch):
+    """Automatically snooze updates that fail 3 consecutive runs to prevent repeated failures."""
+
+    _conf_key = CONF_AUTO_QUARANTINE
+    _default = DEFAULT_AUTO_QUARANTINE
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "Auto-Quarantine Failing Updates", "auto_quarantine_switch", "mdi:shield-alert")

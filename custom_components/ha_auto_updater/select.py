@@ -21,30 +21,33 @@ _HOUR_OPTIONS: list[str] = [
 
 
 def _label_to_24h(label: str) -> str:
-    """Convert '2:00 AM' → '02:00', '12:00 PM' → '12:00', etc."""
-    parts = label.split()          # ['2:00', 'AM']
-    h, _ = parts[0].split(":")
-    hour = int(h)
-    if parts[1] == "AM":
+    """Convert '2:00 AM' → '02:00', '2:30 PM' → '14:30', etc."""
+    parts = label.split()          # ['2:30', 'PM']
+    h_str, m_str = parts[0].split(":")
+    hour = int(h_str)
+    if len(parts) > 1 and parts[1] == "AM":
         hour = 0 if hour == 12 else hour
-    else:
+    elif len(parts) > 1 and parts[1] == "PM":
         hour = 12 if hour == 12 else hour + 12
-    return f"{hour:02d}:00"
+    return f"{hour:02d}:{m_str}"
 
 
 def _24h_to_label(time_str: str) -> str:
-    """Convert '02:00' → '2:00 AM', '12:00' → '12:00 PM', etc."""
+    """Convert '02:00' → '2:00 AM', '14:30' → '2:30 PM', etc."""
     try:
-        hour = int(time_str.split(":")[0])
+        parts = time_str.split(":")
+        hour = int(parts[0])
+        minute = parts[1] if len(parts) > 1 else "00"
     except (ValueError, IndexError):
-        hour = 2
+        hour, minute = 2, "00"
+
     if hour == 0:
-        return "12:00 AM"
+        return f"12:{minute} AM"
     if hour < 12:
-        return f"{hour}:00 AM"
+        return f"{hour}:{minute} AM"
     if hour == 12:
-        return "12:00 PM"
-    return f"{hour - 12}:00 PM"
+        return f"12:{minute} PM"
+    return f"{hour - 12}:{minute} PM"
 
 
 async def async_setup_entry(
@@ -61,9 +64,10 @@ class RunTimeSelectEntity(SelectEntity):
     without needing to open the Configure dialog.
     """
 
+    _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_icon = "mdi:clock-outline"
-    _attr_name = "Run Time"
+    _attr_name = "Run time"
     _attr_options = _HOUR_OPTIONS
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:

@@ -27,9 +27,10 @@ class UpdatesAvailableBinarySensor(BinarySensorEntity):
     pending-count sensor against zero.
     """
 
+    _attr_has_entity_name = True
     _attr_should_poll = False
     _attr_device_class = BinarySensorDeviceClass.UPDATE
-    _attr_name = "Auto Updater Updates Available"
+    _attr_name = "Updates available"
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator

@@ -19,6 +19,7 @@ from .const import (
     CONF_FREQUENCY,
     CONF_INCLUDE_MAJOR,
     CONF_MAX_UPDATES_PER_RUN,
+    CONF_MIN_DISK_SPACE_GB,
     CONF_NOTIFY_ON_NEW_UPDATES,
     CONF_NOTIFY_SERVICE,
     CONF_PRE_NOTIFY_DELAY,
@@ -33,6 +34,7 @@ from .const import (
     DEFAULT_FREQUENCY,
     DEFAULT_INCLUDE_MAJOR,
     DEFAULT_MAX_UPDATES_PER_RUN,
+    DEFAULT_MIN_DISK_SPACE_GB,
     DEFAULT_NOTIFY_ON_NEW_UPDATES,
     DEFAULT_NOTIFY_SERVICE,
     DEFAULT_PRE_NOTIFY_DELAY,
@@ -105,6 +107,16 @@ def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
                 NumberSelectorConfig(
                     min=0, max=50, step=1,
                     unit_of_measurement="updates",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_MIN_DISK_SPACE_GB,
+                default=options.get(CONF_MIN_DISK_SPACE_GB, DEFAULT_MIN_DISK_SPACE_GB),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0.5, max=20.0, step=0.5,
+                    unit_of_measurement="GB",
                     mode=NumberSelectorMode.BOX,
                 )
             ),

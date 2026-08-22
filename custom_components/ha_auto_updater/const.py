@@ -27,6 +27,13 @@ CONF_BACKUP_KEEP_DAYS = "backup_keep_days"      # purge pre-update backups older
 CONF_DEBUG = "debug_logging"
 CONF_AUTO_RESTART = "auto_restart"
 CONF_WEEKLY_DIGEST = "weekly_digest"
+CONF_AUTO_QUARANTINE = "auto_quarantine"
+
+# Category update toggles
+CONF_UPDATE_ADDONS = "update_addons"
+CONF_UPDATE_HACS = "update_hacs"
+CONF_UPDATE_FIRMWARE = "update_firmware"
+CONF_UPDATE_SYSTEM = "update_system"
 
 # Notifications (switch entities)
 CONF_NOTIFY_SUCCESS = "notify_success"
@@ -37,8 +44,9 @@ CONF_NOTIFY_SERVICE = "notify_service"
 CONF_NOTIFY_ON_NEW_UPDATES = "notify_on_new_updates"
 DEFAULT_NOTIFY_ON_NEW_UPDATES = False
 
-# Limits
+# Limits & Guards
 CONF_MAX_UPDATES_PER_RUN = "max_updates_per_run"
+CONF_MIN_DISK_SPACE_GB = "min_disk_space_gb"
 
 # Exclusions
 CONF_EXCLUDED_ENTITIES = "excluded_entities"
@@ -86,7 +94,22 @@ DEFAULT_NOTIFY_SUCCESS = True
 DEFAULT_NOTIFY_FAILURE = True
 DEFAULT_NOTIFY_SERVICE = ""
 DEFAULT_MAX_UPDATES_PER_RUN = 0     # 0 = unlimited
+DEFAULT_MIN_DISK_SPACE_GB = 1.5      # GB
+DEFAULT_AUTO_QUARANTINE = True
+DEFAULT_UPDATE_ADDONS = True
+DEFAULT_UPDATE_HACS = True
+DEFAULT_UPDATE_FIRMWARE = True
+DEFAULT_UPDATE_SYSTEM = True
 DEFAULT_EXCLUDED_ENTITIES: list = []
+
+# ---------------------------------------------------------------------------
+# Bus Events
+# ---------------------------------------------------------------------------
+EVENT_UPDATE_START = "ha_auto_updater_start"
+EVENT_BACKUP_START = "ha_auto_updater_backup_start"
+EVENT_BACKUP_COMPLETE = "ha_auto_updater_backup_complete"
+EVENT_ITEM_COMPLETE = "ha_auto_updater_item_complete"
+EVENT_RUN_FINISHED = "ha_auto_updater_finished"
 
 # ---------------------------------------------------------------------------
 # Service names

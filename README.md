@@ -6,9 +6,9 @@
 [![GitHub Release](https://img.shields.io/github/v/release/stephenh678/ha-auto-updater)](https://github.com/stephenh678/ha-auto-updater/releases)
 [![License](https://img.shields.io/github/license/stephenh678/ha-auto-updater)](LICENSE)
 
-A custom Home Assistant integration that automatically installs available updates on a schedule — with backup protection, automatic backup cleanup, notifications, per-update snoozing, and full dashboard control.
+A custom Home Assistant integration that automatically installs available updates on a schedule — with backup protection, pre-flight disk space guards, granular category switches, auto-quarantine, custom event hooks, and full dashboard control.
 
-> **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.2.0 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -16,27 +16,31 @@ A custom Home Assistant integration that automatically installs available update
 
 Home Assistant surfaces updates but won't install them for you. **HA Auto Updater** does — safely and on your terms:
 
-- Takes a full backup *right before* installing (only when there's actually something to install — never on a wasteful schedule)
-- Skips major version bumps and beta/RC releases by default
-- Lets you snooze a specific update for a few days when a release looks risky
-- Cleans up its own old pre-update backups so they don't pile up
-- Tells you what happened — persistent notifications, optional mobile push, and a weekly digest
+- **Pre-flight safety guards:** Verifies host disk space (`min_disk_space_gb`) and aborts if HA is in Safe Mode.
+- **Granular category control:** Toggle updates independently for Add-ons, HACS integrations, device firmware, and HA Core/OS.
+- **Backup before update:** Takes a full backup *right before* installing (only when there's actually something to install — never on a wasteful schedule).
+- **Auto-Quarantine:** Automatically snoozes components that fail 3 consecutive runs for 7 days to prevent repeated failure loops.
+- **Major-version & Beta protection:** Skips major version bumps and beta/RC releases by default.
+- **Per-update snooze:** Lets you snooze a specific update for a few days when a release looks risky.
+- **Automations & Event hooks:** Fires rich events (`ha_auto_updater_start`, `_finished`, etc.) on `hass.bus` for Node-RED and custom automations.
+- **Notifications & Digest:** Persistent notifications, optional mobile push, and weekly summaries.
 
 ---
 
 ## Features
 
-- **Scheduled updates** — runs hourly, daily, or weekly; the run time is editable right from the device page
+- **Scheduled updates** — runs hourly, daily, or weekly; run time is editable right from the device page
+- **Category update toggles** — dedicated switches for Add-ons, HACS, Device Firmware, and Core/OS
+- **Storage & Safe Mode guards** — aborts runs if free disk space is below minimum threshold or if HA is in Safe Mode
+- **Auto-Quarantine** — automatically snoozes items failing 3 consecutive runs for 7 days
 - **Backup before update** — triggers a full HA backup before installing (only when updates are pending)
-- **Backup auto-purge** — optionally deletes the pre-update backups *it* created once they pass a configurable age (your manual backups are never touched)
-- **Major-version protection** — skips major bumps by default (HA Core/OS/Supervisor calendar versions are handled correctly and never filtered)
+- **Backup auto-purge** — deletes pre-update backups *it* created once they pass a configurable age
+- **Major-version protection** — uses `AwesomeVersion` for strict SemVer and CalVer version checks
 - **Beta/RC skipping** — optionally skips pre-release versions
-- **Per-update snooze** — temporarily skip a specific update for N days via a service call
-- **Auto restart** — optionally restarts HA after installing updates that require it (HACS / custom components)
-- **Release-notes links** — pending list and success notifications link to each update's changelog when available
-- **Notifications** — persistent (and optional mobile push) on success/failure, new-update detection, and a weekly digest
-- **Repeated-failure escalation** — flags any component that fails several runs in a row
-- **Rich sensors** — pending count, failed count, last-run status/duration/count, next run, history, and an updates-available binary sensor
+- **Per-update snooze** — temporarily skip a specific update for N days via service call
+- **Event Bus hooks** — fires structured events on `hass.bus` for external automations
+- **Auto restart** — optionally restarts HA after installing updates that require it
+- **Rich sensors** — pending count, failed count, last-run status/duration/count, next run, history, and binary sensor
 
 ---
 
@@ -62,16 +66,9 @@ Home Assistant surfaces updates but won't install them for you. **HA Auto Update
 
 ## Documentation
 
-Full configuration options, every entity and service, how it works, and troubleshooting are documented here:
+Full configuration options, every entity, service, event hook, and troubleshooting guide:
 
 ➡️ **[Detailed documentation](custom_components/ha_auto_updater/README.md)**
-
-A few quick pointers:
-
-- **"How often to check for updates" is not a backup schedule** — it controls how often Auto Updater *looks for and installs* updates. Backups only happen as a step inside an actual install.
-- Snooze an update: call `ha_auto_updater.snooze_update` with an `entity_id` and optional `days`.
-- All feature toggles (backup, auto-purge, notifications, etc.) are switches on the device page; scheduling/limits are in the integration's **Configure** dialog.
-- Want a dashboard card? See [`examples/`](examples) for copy-paste-ready YAML (entities card + a standalone button), no HACS frontend cards required.
 
 ---
 

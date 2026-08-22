@@ -14,6 +14,7 @@
           "retry_delay": "Wait before retrying a failed install",
           "include_major": "Include major version updates",
           "max_updates_per_run": "Maximum updates per run (0 = unlimited)",
+          "min_disk_space_gb": "Minimum free disk space required",
           "backup_keep_days": "Auto-purge backups older than",
           "notify_service": "Forward notifications to service",
           "weekly_digest": "Send weekly digest",
@@ -28,6 +29,7 @@
           "stagger_delay": "Seconds to pause between each individual update. 0 = no pause.",
           "retry_delay": "Seconds to wait before the single automatic retry of a failed install.",
           "max_updates_per_run": "Cap on how many updates install per run. Leave at 0 for unlimited.",
+          "min_disk_space_gb": "Update runs will abort if free storage on the host is below this threshold (in GB).",
           "backup_keep_days": "Only used when 'Auto-Purge Old Backups' is on. Pre-update backups older than this many days are deleted.",
           "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
           "notify_on_new_updates": "Requires a notify service above."
@@ -53,6 +55,7 @@
           "retry_delay": "Wait before retrying a failed install",
           "include_major": "Include major version updates",
           "max_updates_per_run": "Maximum updates per run (0 = unlimited)",
+          "min_disk_space_gb": "Minimum free disk space required",
           "backup_keep_days": "Auto-purge backups older than",
           "notify_service": "Forward notifications to service",
           "weekly_digest": "Send weekly digest",
@@ -67,6 +70,7 @@
           "stagger_delay": "Seconds to pause between each individual update. 0 = no pause.",
           "retry_delay": "Seconds to wait before the single automatic retry of a failed install.",
           "max_updates_per_run": "Cap on how many updates install per run. Leave at 0 for unlimited.",
+          "min_disk_space_gb": "Update runs will abort if free storage on the host is below this threshold (in GB).",
           "backup_keep_days": "Only used when 'Auto-Purge Old Backups' is on. Pre-update backups older than this many days are deleted.",
           "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
           "notify_on_new_updates": "Requires a notify service above."
