@@ -1,22 +1,51 @@
-# HA Auto Updater — Simple Dashboard Card
+# HA Auto Updater — Full Feature Dashboard Card (v1.2.0)
 #
-# Uses only built-in Home Assistant card types (no HACS frontend cards required).
-# To add: Settings → Dashboards → Edit Dashboard → Add Card → scroll to bottom →
-# "Manual" (YAML editor) → paste this in.
+# Uses built-in Home Assistant card types to display status, controls, and category switches.
+# To add: Settings → Dashboards → Edit Dashboard → Add Card → "Manual" (YAML) → paste this in.
 
-type: entities
-title: HA Auto Updater
-show_header_toggle: false
-entities:
-  - entity: sensor.ha_auto_updater_auto_updater_pending_updates
-    name: Pending Updates
-  - entity: sensor.ha_auto_updater_auto_updater_last_run_status
-    name: Last Run Status
-  - entity: sensor.ha_auto_updater_auto_updater_next_run
-    name: Next Scheduled Run
-  - entity: switch.ha_auto_updater_auto_updater
-    name: Auto Updates Enabled
-  - entity: button.ha_auto_updater_run_updates_now
-    name: Run Updates Now
-  - entity: button.ha_auto_updater_scan_for_updates
-    name: Scan for Updates
+type: vertical-stack
+cards:
+  - type: entities
+    title: Status & Schedule
+    show_header_toggle: false
+    entities:
+      - entity: sensor.ha_auto_updater_auto_updater_pending_updates
+        name: Pending Updates
+      - entity: sensor.ha_auto_updater_auto_updater_last_run_status
+        name: Last Run Status
+      - entity: sensor.ha_auto_updater_auto_updater_last_run
+        name: Last Run
+      - entity: sensor.ha_auto_updater_auto_updater_next_run
+        name: Next Scheduled Run
+      - entity: select.ha_auto_updater_run_time
+        name: Run Time
+
+  - type: entities
+    title: Category Controls
+    show_header_toggle: false
+    entities:
+      - entity: switch.ha_auto_updater_auto_updater
+        name: Master Auto-Updater Toggle
+      - entity: switch.ha_auto_updater_auto_update_add_ons
+        name: Auto-Update Add-ons
+      - entity: switch.ha_auto_updater_auto_update_hacs_integrations
+        name: Auto-Update HACS Integrations
+      - entity: switch.ha_auto_updater_auto_update_device_firmware
+        name: Auto-Update Device Firmware
+      - entity: switch.ha_auto_updater_auto_update_core_os
+        name: Auto-Update Core & OS
+      - entity: switch.ha_auto_updater_auto_quarantine_failing_updates
+        name: Auto-Quarantine Failing Updates
+
+  - type: entities
+    title: Safety & Actions
+    show_header_toggle: false
+    entities:
+      - entity: switch.ha_auto_updater_backup_before_updating
+        name: Backup Before Update
+      - entity: switch.ha_auto_updater_restart_after_updates
+        name: Restart After Updates
+      - entity: button.ha_auto_updater_run_updates_now
+        name: Run Updates Now
+      - entity: button.ha_auto_updater_scan_for_updates
+        name: Scan for Updates
