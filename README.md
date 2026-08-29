@@ -1,4 +1,4 @@
-# HA Auto Updater
+# Home Assistant Auto Updater (HA Auto Updater)
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![HACS Validation](https://github.com/stephenh678/ha-auto-updater/actions/workflows/hacs.yaml/badge.svg)](https://github.com/stephenh678/ha-auto-updater/actions/workflows/hacs.yaml)
