@@ -9,9 +9,11 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    TimeSelector,
 )
 
 from .const import (
+    CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_BACKUP_KEEP_DAYS,
     CONF_DAY_OF_WEEK,
     CONF_ENABLED,
@@ -28,6 +30,7 @@ from .const import (
     CONF_TIME_OF_DAY,
     CONF_WEEKLY_DIGEST,
     DAYS_OF_WEEK,
+    DEFAULT_ABORT_ON_BACKUP_FAILURE,
     DEFAULT_BACKUP_KEEP_DAYS,
     DEFAULT_DAY_OF_WEEK,
     DEFAULT_ENABLED,
@@ -61,11 +64,15 @@ def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
             vol.Required(
                 CONF_TIME_OF_DAY,
                 default=options.get(CONF_TIME_OF_DAY, DEFAULT_TIME_OF_DAY),
-            ): str,
+            ): TimeSelector(),
             vol.Optional(
                 CONF_DAY_OF_WEEK,
                 default=options.get(CONF_DAY_OF_WEEK, DEFAULT_DAY_OF_WEEK),
             ): vol.In(list(DAYS_OF_WEEK.keys())),
+            vol.Required(
+                CONF_ABORT_ON_BACKUP_FAILURE,
+                default=options.get(CONF_ABORT_ON_BACKUP_FAILURE, DEFAULT_ABORT_ON_BACKUP_FAILURE),
+            ): bool,
             vol.Required(
                 CONF_PRE_NOTIFY_DELAY,
                 default=options.get(CONF_PRE_NOTIFY_DELAY, DEFAULT_PRE_NOTIFY_DELAY),

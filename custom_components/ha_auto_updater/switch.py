@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_AUTO_QUARANTINE,
     CONF_AUTO_RESTART,
     CONF_BACKUP_BEFORE_UPDATE,
@@ -26,6 +27,7 @@ from .const import (
     CONF_UPDATE_SYSTEM,
     CONF_WEEKLY_DIGEST,
     DATA_COORDINATOR,
+    DEFAULT_ABORT_ON_BACKUP_FAILURE,
     DEFAULT_AUTO_QUARANTINE,
     DEFAULT_AUTO_RESTART,
     DEFAULT_BACKUP_BEFORE_UPDATE,
@@ -56,6 +58,7 @@ async def async_setup_entry(
             AutoUpdaterSwitch(coordinator, entry),
             AutoRestartSwitch(coordinator, entry),
             BackupSwitch(coordinator, entry),
+            AbortOnBackupFailureSwitch(coordinator, entry),
             BackupCleanupSwitch(coordinator, entry),
             SkipBetaSwitch(coordinator, entry),
             DebugLoggingSwitch(coordinator, entry),
@@ -188,6 +191,23 @@ class BackupSwitch(_FeatureSwitch):
                 "Backup before updating is **turned off**. "
                 "Updates will install without creating a backup first.",
             )
+
+
+class AbortOnBackupFailureSwitch(_FeatureSwitch):
+    """Enforce strict backup requirement — abort run if pre-update backup fails."""
+
+    _conf_key = CONF_ABORT_ON_BACKUP_FAILURE
+    _default = DEFAULT_ABORT_ON_BACKUP_FAILURE
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            "Abort on Backup Failure",
+            "abort_on_backup_failure_switch",
+            "mdi:shield-alert-outline",
+        )
 
 
 class BackupCleanupSwitch(_FeatureSwitch):

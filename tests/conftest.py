@@ -22,14 +22,46 @@ except ImportError:
     sys.modules["homeassistant.config_entries"] = MagicMock(ConfigEntry=MagicMock)
     sys.modules["homeassistant.core"] = MagicMock(HomeAssistant=MagicMock, ServiceCall=MagicMock)
     sys.modules["homeassistant.helpers"] = MagicMock()
-    sys.modules["homeassistant.helpers.config_validation"] = MagicMock(entity_id=MagicMock())
+    sys.modules["homeassistant.helpers.config_validation"] = MagicMock(
+        entity_id=MagicMock(),
+        multi_select=MagicMock(return_value=MagicMock()),
+    )
     sys.modules["homeassistant.helpers.entity_platform"] = MagicMock()
     sys.modules["homeassistant.helpers.entity_registry"] = MagicMock()
     sys.modules["homeassistant.helpers.event"] = MagicMock()
     sys.modules["homeassistant.helpers.typing"] = MagicMock()
+    def _async_redact_data(data, to_redact):
+        if isinstance(data, dict):
+            return {
+                k: ("**REDACTED**" if k in to_redact else _async_redact_data(v, to_redact))
+                for k, v in data.items()
+            }
+        if isinstance(data, list):
+            return [_async_redact_data(v, to_redact) for v in data]
+        return data
+
+    class _NumberSelectorMode:
+        BOX = "box"
+        SLIDER = "slider"
+
     sys.modules["homeassistant.util"] = MagicMock(dt=dt_util_mock)
+    sys.modules["homeassistant.components.diagnostics"] = MagicMock(async_redact_data=_async_redact_data)
     sys.modules["homeassistant.components.sensor"] = MagicMock()
     sys.modules["homeassistant.components.binary_sensor"] = MagicMock()
     sys.modules["homeassistant.components.switch"] = MagicMock()
     sys.modules["homeassistant.components.button"] = MagicMock()
     sys.modules["homeassistant.components.select"] = MagicMock()
+    class _DummySelector:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, data):
+            return data
+
+    sys.modules["homeassistant.helpers.selector"] = MagicMock(
+        NumberSelector=_DummySelector,
+        NumberSelectorConfig=_DummySelector,
+        NumberSelectorMode=_NumberSelectorMode,
+        TimeSelector=_DummySelector,
+        TimeSelectorConfig=_DummySelector,
+    )

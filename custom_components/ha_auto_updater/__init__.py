@@ -15,6 +15,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     SERVICE_CLEAR_SNOOZE,
+    SERVICE_INSTALL_SINGLE,
     SERVICE_RUN_UPDATES,
     SERVICE_SNOOZE_UPDATE,
 )
@@ -45,6 +46,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _handle_run_updates(call: ServiceCall) -> None:  # noqa: ARG001
         await coordinator.async_run_updates()
 
+    async def _handle_install_single(call: ServiceCall) -> None:
+        await coordinator.async_install_single(call.data["entity_id"])
+
     async def _handle_snooze_update(call: ServiceCall) -> None:
         await coordinator.async_snooze_update(
             call.data["entity_id"],
@@ -55,6 +59,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_clear_snooze(call.data.get("entity_id"))
 
     hass.services.async_register(DOMAIN, SERVICE_RUN_UPDATES, _handle_run_updates)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_INSTALL_SINGLE,
+        _handle_install_single,
+        schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}),
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_SNOOZE_UPDATE,
@@ -75,6 +85,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _remove_services() -> None:
         hass.services.async_remove(DOMAIN, SERVICE_RUN_UPDATES)
+        hass.services.async_remove(DOMAIN, SERVICE_INSTALL_SINGLE)
         hass.services.async_remove(DOMAIN, SERVICE_SNOOZE_UPDATE)
         hass.services.async_remove(DOMAIN, SERVICE_CLEAR_SNOOZE)
 

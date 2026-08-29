@@ -22,6 +22,7 @@ CONF_SKIP_BETA = "skip_beta"
 
 # Feature toggles (stored in options, exposed as switch entities)
 CONF_BACKUP_BEFORE_UPDATE = "backup_before_update"
+CONF_ABORT_ON_BACKUP_FAILURE = "abort_on_backup_failure"
 CONF_BACKUP_CLEANUP = "backup_cleanup"          # auto-purge old pre-update backups
 CONF_BACKUP_KEEP_DAYS = "backup_keep_days"      # purge pre-update backups older than N days
 CONF_DEBUG = "debug_logging"
@@ -85,6 +86,7 @@ DEFAULT_RETRY_DELAY = 60             # seconds
 DEFAULT_INCLUDE_MAJOR = False
 DEFAULT_SKIP_BETA = True
 DEFAULT_BACKUP_BEFORE_UPDATE = True
+DEFAULT_ABORT_ON_BACKUP_FAILURE = False
 DEFAULT_BACKUP_CLEANUP = False
 DEFAULT_BACKUP_KEEP_DAYS = 7         # days
 DEFAULT_DEBUG = False
@@ -115,6 +117,7 @@ EVENT_RUN_FINISHED = "ha_auto_updater_finished"
 # Service names
 # ---------------------------------------------------------------------------
 SERVICE_RUN_UPDATES = "run_updates"
+SERVICE_INSTALL_SINGLE = "install_single"
 SERVICE_SNOOZE_UPDATE = "snooze_update"
 SERVICE_CLEAR_SNOOZE = "clear_snooze"
 DEFAULT_SNOOZE_DAYS = 7

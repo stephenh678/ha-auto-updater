@@ -8,7 +8,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule — with backup protection, pre-flight disk space guards, granular category switches, auto-quarantine, custom event hooks, and full dashboard control.
 
-> **Version:** 1.2.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.2.5 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 

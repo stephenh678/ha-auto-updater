@@ -19,6 +19,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     BACKUP_STATE_FILE,
+    CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_AUTO_QUARANTINE,
     CONF_AUTO_RESTART,
     CONF_BACKUP_BEFORE_UPDATE,
@@ -47,6 +48,7 @@ from .const import (
     CONF_UPDATE_SYSTEM,
     CONF_WEEKLY_DIGEST,
     DAYS_OF_WEEK,
+    DEFAULT_ABORT_ON_BACKUP_FAILURE,
     DEFAULT_AUTO_QUARANTINE,
     DEFAULT_AUTO_RESTART,
     DEFAULT_BACKUP_BEFORE_UPDATE,
@@ -213,8 +215,9 @@ class AutoUpdaterCoordinator:
         frequency = self.options.get(CONF_FREQUENCY, DEFAULT_FREQUENCY)
         time_str = self.options.get(CONF_TIME_OF_DAY, DEFAULT_TIME_OF_DAY)
         try:
-            hour, minute = map(int, time_str.split(":"))
-        except (ValueError, AttributeError):
+            parts = str(time_str).split(":")
+            hour, minute = int(parts[0]), int(parts[1])
+        except (ValueError, AttributeError, IndexError):
             hour, minute = 2, 0
 
         now = dt_util.now()
@@ -432,6 +435,184 @@ class AutoUpdaterCoordinator:
         finally:
             self._is_running = False
 
+    async def async_install_single(self, entity_id: str) -> bool:
+        """Manually install an update for a single entity with safety guards & backup."""
+        if self._is_running:
+            _LOGGER.warning("Auto Updater: run already in progress — skipping single install of %s.", entity_id)
+            return False
+
+        self._is_running = True
+        self._notify_listeners()
+        try:
+            # --- Safe Mode Guard ---
+            if getattr(self.hass.config, "safe_mode", False):
+                _LOGGER.warning("Auto Updater: Home Assistant is running in Safe Mode — aborting manual update for %s.", entity_id)
+                return False
+
+            # --- Disk Space Guard ---
+            min_disk_gb = float(self.options.get(CONF_MIN_DISK_SPACE_GB, DEFAULT_MIN_DISK_SPACE_GB))
+            space_ok, free_gb = self._check_disk_space(min_disk_gb)
+            if not space_ok:
+                _LOGGER.error(
+                    "Auto Updater: insufficient disk space (%.2f GB available, %.2f GB required) — aborting manual update for %s.",
+                    free_gb, min_disk_gb, entity_id,
+                )
+                self._send_status_notification(
+                    "Storage Warning — Update Aborted",
+                    "Available disk space ({:.2f} GB) is below the configured minimum ({:.2f} GB). Update for {} aborted.".format(
+                        free_gb, min_disk_gb, entity_id
+                    ),
+                    notification_id="ha_auto_updater_low_storage",
+                )
+                return False
+
+            # --- Entity State Check ---
+            current_state = self.hass.states.get(entity_id)
+            if current_state is None or current_state.state != "on":
+                _LOGGER.info("Auto Updater: %s is not available for update or already up to date.", entity_id)
+                return False
+
+            attrs = current_state.attributes
+            title = attrs.get("title") or entity_id
+            installed = attrs.get("installed_version", "?")
+            latest = attrs.get("latest_version", "?")
+            release_url = attrs.get("release_url")
+            restart_required = attrs.get("restart_required", True)
+            is_system_update = entity_id in _HA_SYSTEM_UPDATE_ENTITIES
+
+            # --- Backup ---
+            backup_enabled: bool = self.options.get(CONF_BACKUP_BEFORE_UPDATE, DEFAULT_BACKUP_BEFORE_UPDATE)
+            abort_on_backup_failure: bool = self.options.get(
+                CONF_ABORT_ON_BACKUP_FAILURE, DEFAULT_ABORT_ON_BACKUP_FAILURE
+            )
+            if backup_enabled:
+                _LOGGER.info("Auto Updater: creating backup before manual update of %s…", entity_id)
+                self.hass.bus.async_fire(EVENT_BACKUP_START, {"entity_id": entity_id})
+                self._send_status_notification(
+                    "Creating backup…",
+                    "A backup is being created before installing update for {}.".format(title),
+                    notification_id="ha_auto_updater_backup_progress",
+                )
+                backup_ok = await self._create_backup()
+                self._dismiss_notification("ha_auto_updater_backup_progress")
+                self.hass.bus.async_fire(EVENT_BACKUP_COMPLETE, {"success": backup_ok, "entity_id": entity_id})
+                if backup_ok:
+                    _LOGGER.info("Auto Updater: backup completed successfully.")
+                    self._send_status_notification(
+                        "Backup complete",
+                        "Backup created successfully. Installing update for {} now.".format(title),
+                        notification_id="ha_auto_updater_backup_done",
+                    )
+                else:
+                    if abort_on_backup_failure:
+                        _LOGGER.error(
+                            "Auto Updater: pre-update backup failed and strict backup mode is enabled — aborting update for %s.",
+                            entity_id,
+                        )
+                        self._send_status_notification(
+                            "Backup Failed — Update Aborted",
+                            "Pre-update backup failed. Update of {} aborted due to strict backup requirement.".format(title),
+                            notification_id="ha_auto_updater_backup_failed",
+                        )
+                        return False
+                    _LOGGER.warning("Auto Updater: backup failed or unavailable, proceeding anyway.")
+
+            self._dismiss_notification("ha_auto_updater_backup_done")
+            retry_delay = int(self.options.get(CONF_RETRY_DELAY, DEFAULT_RETRY_DELAY))
+
+            # --- Install with retry ---
+            success = False
+            for attempt in range(2):
+                try:
+                    _LOGGER.debug(
+                        "Auto Updater: calling update.install for %s (attempt %d, blocking=%s)",
+                        title, attempt + 1, not is_system_update,
+                    )
+                    await asyncio.wait_for(
+                        self.hass.services.async_call(
+                            "update",
+                            "install",
+                            {"entity_id": entity_id},
+                            blocking=not is_system_update,
+                        ),
+                        timeout=300,
+                    )
+                    success = True
+                    self.hass.bus.async_fire(
+                        EVENT_ITEM_COMPLETE,
+                        {"entity_id": entity_id, "title": title, "success": True, "from": installed, "to": latest},
+                    )
+                    _LOGGER.info("Auto Updater: ✓ %s  %s → %s (manual update)", title, installed, latest)
+                    if is_system_update:
+                        _LOGGER.info(
+                            "Auto Updater: %s is a system-level update — install triggered (non-blocking).",
+                            title,
+                        )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    if attempt == 0:
+                        _LOGGER.warning(
+                            "Auto Updater: attempt 1 failed for %s — %s  Retrying in %ds…",
+                            title, exc, retry_delay,
+                        )
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        _LOGGER.error("Auto Updater: ✗ %s failed after retry — %s", title, exc)
+                        self.hass.bus.async_fire(
+                            EVENT_ITEM_COMPLETE,
+                            {"entity_id": entity_id, "title": title, "success": False, "from": installed, "to": latest},
+                        )
+
+            run_time = dt_util.now()
+            notify_success: bool = self.options.get(CONF_NOTIFY_SUCCESS, DEFAULT_NOTIFY_SUCCESS)
+            notify_failure: bool = self.options.get(CONF_NOTIFY_FAILURE, DEFAULT_NOTIFY_FAILURE)
+
+            if success:
+                updated_item = {"title": title, "from": installed, "to": latest, "release_url": release_url}
+                await self._append_and_save_history({
+                    "timestamp": run_time.isoformat(),
+                    "updated": ["{} ({} → {})".format(title, installed, latest)],
+                    "failed": [],
+                    "total_updated": 1,
+                    "total_failed": 0,
+                    "duration_seconds": 0,
+                    "note": f"Manual update of {title}",
+                })
+                if notify_success:
+                    self._send_success_notification([updated_item])
+                    self._send_push_notification("Updates Installed", f"{title} updated successfully to {latest}.")
+            else:
+                await self._append_and_save_history({
+                    "timestamp": run_time.isoformat(),
+                    "updated": [],
+                    "failed": [title],
+                    "total_updated": 0,
+                    "total_failed": 1,
+                    "duration_seconds": 0,
+                    "note": f"Manual update failed for {title}",
+                })
+                if notify_failure:
+                    self._send_failure_notification([title])
+                    self._send_push_notification("Update Failures", f"Failed to update {title}.")
+
+            await self._async_scan_pending(None)
+
+            # Auto-restart if needed
+            auto_restart: bool = self.options.get(CONF_AUTO_RESTART, DEFAULT_AUTO_RESTART)
+            if success and not is_system_update and auto_restart and restart_required:
+                _LOGGER.info("Auto Updater: restarting HA — %s update requires restart.", title)
+                self._send_status_notification(
+                    "Restarting…",
+                    f"HA is restarting to apply update for {title}.",
+                )
+                await asyncio.sleep(3)
+                await self.hass.services.async_call("homeassistant", "restart")
+
+            return success
+        finally:
+            self._is_running = False
+            self._notify_listeners()
+
     async def _async_run_updates_inner(self) -> None:
         _LOGGER.info("Auto Updater: checking for available updates…")
 
@@ -462,6 +643,9 @@ class AutoUpdaterCoordinator:
             return
 
         backup_enabled: bool = self.options.get(CONF_BACKUP_BEFORE_UPDATE, DEFAULT_BACKUP_BEFORE_UPDATE)
+        abort_on_backup_failure: bool = self.options.get(
+            CONF_ABORT_ON_BACKUP_FAILURE, DEFAULT_ABORT_ON_BACKUP_FAILURE
+        )
         pre_notify_delay: int = int(self.options.get(CONF_PRE_NOTIFY_DELAY, DEFAULT_PRE_NOTIFY_DELAY))
         stagger_delay: int = int(self.options.get(CONF_STAGGER_DELAY, DEFAULT_STAGGER_DELAY))
         retry_delay: int = int(self.options.get(CONF_RETRY_DELAY, DEFAULT_RETRY_DELAY))
@@ -474,6 +658,10 @@ class AutoUpdaterCoordinator:
             len(self.hass.states.async_all("update")),
         )
         available = self._filter_available_updates(log_skips=True)
+
+        # Sort available updates so non-system updates execute first and system updates
+        # (Core, OS, Supervisor) execute last, preventing background restarts from interrupting other updates.
+        available.sort(key=lambda e: 1 if e.entity_id in _HA_SYSTEM_UPDATE_ENTITIES else 0)
 
         # Apply max-updates-per-run cap (0 = unlimited)
         if max_updates > 0 and len(available) > max_updates:
@@ -537,6 +725,19 @@ class AutoUpdaterCoordinator:
                     notification_id="ha_auto_updater_backup_done",
                 )
             else:
+                if abort_on_backup_failure:
+                    _LOGGER.error(
+                        "Auto Updater: pre-update backup failed and strict backup mode is enabled — aborting update run."
+                    )
+                    self._send_status_notification(
+                        "Backup Failed — Run Aborted",
+                        "Pre-update backup failed. Update run aborted due to strict backup requirement.",
+                        notification_id="ha_auto_updater_backup_failed",
+                    )
+                    self.last_run = dt_util.now()
+                    self.last_run_status = "Aborted (Backup Failed)"
+                    self._notify_listeners()
+                    return
                 _LOGGER.warning("Auto Updater: backup failed or unavailable, proceeding anyway.")
 
         # --- 4. Pre-update notification + delay ---
