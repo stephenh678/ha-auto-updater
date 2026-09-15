@@ -89,6 +89,8 @@ class PendingUpdatesSensor(_BaseAutoUpdaterSensor):
                 if u.get("release_url")
             ],
             "snoozed": self._coordinator.snoozed_summary(),
+            # Updates held back by the release cooldown, with when each becomes eligible
+            "cooling_down": self._coordinator.cooldown_updates,
         }
 
 

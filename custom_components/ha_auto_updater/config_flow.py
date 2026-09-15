@@ -6,6 +6,8 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -13,6 +15,11 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    BLOCKING_ENTITY_DOMAINS,
+    CONF_BLOCKING_ENTITIES,
+    CONF_MIN_RELEASE_AGE_DAYS,
+    DEFAULT_BLOCKING_ENTITIES,
+    DEFAULT_MIN_RELEASE_AGE_DAYS,
     CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_BACKUP_KEEP_DAYS,
     CONF_DAY_OF_WEEK,
@@ -108,6 +115,16 @@ def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
                 default=options.get(CONF_INCLUDE_MAJOR, DEFAULT_INCLUDE_MAJOR),
             ): bool,
             vol.Required(
+                CONF_MIN_RELEASE_AGE_DAYS,
+                default=options.get(CONF_MIN_RELEASE_AGE_DAYS, DEFAULT_MIN_RELEASE_AGE_DAYS),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0, max=60, step=1,
+                    unit_of_measurement="days",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
                 CONF_MAX_UPDATES_PER_RUN,
                 default=options.get(CONF_MAX_UPDATES_PER_RUN, DEFAULT_MAX_UPDATES_PER_RUN),
             ): NumberSelector(
@@ -153,6 +170,16 @@ def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
                 CONF_EXCLUDED_ENTITIES,
                 default=options.get(CONF_EXCLUDED_ENTITIES, []),
             ): cv.multi_select(update_entity_map),
+            # suggested_value rather than default, so clearing every entity
+            # actually clears the list instead of restoring the old selection.
+            vol.Optional(
+                CONF_BLOCKING_ENTITIES,
+                description={
+                    "suggested_value": options.get(CONF_BLOCKING_ENTITIES, DEFAULT_BLOCKING_ENTITIES)
+                },
+            ): EntitySelector(
+                EntitySelectorConfig(domain=BLOCKING_ENTITY_DOMAINS, multiple=True)
+            ),
         }
     )
 
@@ -193,6 +220,8 @@ class AutoUpdaterOptionsFlow(config_entries.OptionsFlow):
         current = {**self.config_entry.data, **self.config_entry.options}
 
         if user_input is not None:
+            # An emptied entity selector is left out of the submitted form.
+            user_input = {CONF_BLOCKING_ENTITIES: [], **user_input}
             return self.async_create_entry(title="", data={**current, **user_input})
 
         return self.async_show_form(

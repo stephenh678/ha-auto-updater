@@ -9,6 +9,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_ACTIONABLE_NOTIFICATIONS,
+    DEFAULT_ACTIONABLE_NOTIFICATIONS,
     CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_AUTO_QUARANTINE,
     CONF_AUTO_RESTART,
@@ -71,6 +73,7 @@ async def async_setup_entry(
             UpdateFirmwareSwitch(coordinator, entry),
             UpdateSystemSwitch(coordinator, entry),
             AutoQuarantineSwitch(coordinator, entry),
+            ActionableNotificationsSwitch(coordinator, entry),
         ]
     )
 
@@ -246,8 +249,8 @@ class AutoRestartSwitch(_FeatureSwitch):
                 self.hass,
                 "ha_auto_updater_auto_restart",
                 "🔄 Auto Restart Enabled",
-                "HA will **automatically restart** after installing updates that require it "
-                "(HACS integrations, custom components). "
+                "HA will **automatically restart** after installing HACS updates, which only "
+                "take effect after a restart. Add-on, firmware and Core/OS updates never trigger it. "
                 "Make sure nothing time-sensitive is running when updates are scheduled.",
             )
         else:
@@ -397,3 +400,20 @@ class AutoQuarantineSwitch(_FeatureSwitch):
 
     def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "Auto-Quarantine Failing Updates", "auto_quarantine_switch", "mdi:shield-alert")
+
+
+class ActionableNotificationsSwitch(_FeatureSwitch):
+    """Add Install now / Skip / Snooze buttons to the pre-update phone notification."""
+
+    _conf_key = CONF_ACTIONABLE_NOTIFICATIONS
+    _default = DEFAULT_ACTIONABLE_NOTIFICATIONS
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            "Notification Action Buttons",
+            "actionable_notifications_switch",
+            "mdi:gesture-tap-button",
+        )

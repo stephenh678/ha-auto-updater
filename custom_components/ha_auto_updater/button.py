@@ -17,6 +17,7 @@ async def async_setup_entry(
     async_add_entities([
         RunUpdatesButton(coordinator, entry),
         ScanUpdatesButton(coordinator, entry),
+        PreviewRunButton(coordinator, entry),
     ])
 
 
@@ -46,7 +47,8 @@ class RunUpdatesButton(_BaseButton):
         self._attr_unique_id = f"{entry.entry_id}_run_now"
 
     async def async_press(self) -> None:
-        await self._coordinator.async_run_updates()
+        # A button press is an explicit request, so blocking entities don't apply.
+        await self._coordinator.async_run_updates(manual=True)
 
 
 class ScanUpdatesButton(_BaseButton):
@@ -61,5 +63,20 @@ class ScanUpdatesButton(_BaseButton):
 
     async def async_press(self) -> None:
         await self._coordinator.async_scan_pending()
+
+
+class PreviewRunButton(_BaseButton):
+    """Press to see what a run would install and skip right now, as a notification."""
+
+    _attr_icon = "mdi:clipboard-text-search-outline"
+    _attr_name = "Preview next run"
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_preview_run"
+
+    async def async_press(self) -> None:
+        report = await self._coordinator.async_dry_run()
+        self._coordinator.send_dry_run_notification(report)
 
 

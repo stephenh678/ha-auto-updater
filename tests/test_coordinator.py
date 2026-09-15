@@ -200,6 +200,7 @@ class TestAutoUpdaterCoordinator(unittest.TestCase):
         mock_hass.config.config_dir = "."
         mock_hass.config.safe_mode = False
         mock_hass.services.async_call = AsyncMock()
+        mock_hass.async_add_executor_job = AsyncMock()
         mock_hass.async_create_task.side_effect = lambda coro: coro.close()
         mock_entry = MagicMock()
         mock_entry.data = {}
@@ -257,6 +258,7 @@ class TestAutoUpdaterCoordinator(unittest.TestCase):
         mock_hass.config.config_dir = "."
         mock_hass.config.safe_mode = False
         mock_hass.services.async_call = AsyncMock()
+        mock_hass.async_add_executor_job = AsyncMock()
         mock_hass.async_create_task.side_effect = lambda coro: coro.close()
         mock_entry = MagicMock()
         mock_entry.data = {}
@@ -314,6 +316,7 @@ class TestAutoUpdaterCoordinator(unittest.TestCase):
         mock_hass.config.config_dir = "."
         mock_hass.config.safe_mode = False
         mock_hass.services.async_call = AsyncMock()
+        mock_hass.async_add_executor_job = AsyncMock()
         mock_entry = MagicMock()
         mock_entry.data = {}
         mock_entry.options = {

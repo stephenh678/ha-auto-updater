@@ -578,7 +578,7 @@ class TestRunTaskIsolation(unittest.TestCase):
         async def scenario():
             started = asyncio.Event()
 
-            async def slow_run(resume=False):
+            async def slow_run(**_kwargs):
                 started.set()
                 await asyncio.sleep(3600)
 
@@ -602,7 +602,7 @@ class TestRunTaskIsolation(unittest.TestCase):
             release = asyncio.Event()
             finished = []
 
-            async def run(resume=False):
+            async def run(**_kwargs):
                 await release.wait()
                 finished.append(True)
 

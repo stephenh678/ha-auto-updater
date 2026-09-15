@@ -51,6 +51,9 @@ async def async_get_config_entry_diagnostics(
             "tracked_backups": coordinator._tracked_backups,
             "pending_verification": coordinator._pending_verification,
             "deferred": coordinator._deferred,
+            "cooldown_updates": coordinator.cooldown_updates,
+            "seen_versions": coordinator._seen_versions,
+            "backup_failure_streak": coordinator._backup_failure_streak,
             "next_run": coordinator.next_run.isoformat() if coordinator.next_run else None,
         },
         "system_info": {

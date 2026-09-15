@@ -175,3 +175,36 @@ FIRMWARE_PLATFORMS = {
     "devolo_home_network", "sonos", "philips_js", "lametric", "ruckus_unleashed",
     "airgradient", "dormakaba_dkey", "nut", "fronius", "enphase_envoy",
 }
+
+# ---------------------------------------------------------------------------
+# 1.4.0 features
+# ---------------------------------------------------------------------------
+# Release cooldown: only install a version once it has been available this long
+CONF_MIN_RELEASE_AGE_DAYS = "min_release_age_days"
+DEFAULT_MIN_RELEASE_AGE_DAYS = 0          # 0 = install as soon as a version appears
+
+# Automatic (scheduled / follow-up) runs are skipped while any of these is on
+CONF_BLOCKING_ENTITIES = "blocking_entities"
+DEFAULT_BLOCKING_ENTITIES: list = []
+BLOCKING_ENTITY_DOMAINS = ["input_boolean", "binary_sensor", "switch", "schedule", "calendar"]
+
+# Install now / Skip / Snooze buttons on the pre-update mobile notification
+CONF_ACTIONABLE_NOTIFICATIONS = "actionable_notifications"
+DEFAULT_ACTIONABLE_NOTIFICATIONS = True
+MOBILE_ACTION_EVENT = "mobile_app_notification_action"
+ACTION_PREFIX = "HA_AUTO_UPDATER"
+ACTION_INSTALL_NOW = "INSTALL_NOW"
+ACTION_SKIP_RUN = "SKIP_RUN"
+ACTION_SNOOZE = "SNOOZE"
+PRE_UPDATE_NOTIFICATION_TAG = "ha_auto_updater_pre_update"
+
+# Preview of what the next run would do
+SERVICE_DRY_RUN = "dry_run"
+
+# When each pending version was first seen, for the release cooldown
+SEEN_STATE_FILE = "ha_auto_updater_seen.json"
+
+# Repairs issues
+ISSUE_QUARANTINED_PREFIX = "quarantined_"
+ISSUE_BACKUP_FAILING = "backup_failing"
+BACKUP_FAILURE_ISSUE_THRESHOLD = 2

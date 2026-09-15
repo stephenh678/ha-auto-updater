@@ -5,7 +5,7 @@ import logging
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
@@ -16,6 +16,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     SERVICE_CLEAR_SNOOZE,
+    SERVICE_DRY_RUN,
     SERVICE_INSTALL_SINGLE,
     SERVICE_RUN_UPDATES,
     SERVICE_SNOOZE_UPDATE,
@@ -49,8 +50,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # Manual trigger service
-    async def _handle_run_updates(call: ServiceCall) -> None:  # noqa: ARG001
-        await coordinator.async_run_updates()
+    async def _handle_run_updates(call: ServiceCall) -> None:
+        # A service call is an explicit request, so it ignores blocking entities
+        # unless the caller (e.g. a scheduling automation) opts in.
+        await coordinator.async_run_updates(
+            manual=not call.data.get("respect_blocking_entities", False)
+        )
+
+    async def _handle_dry_run(call: ServiceCall) -> ServiceResponse:
+        report = await coordinator.async_dry_run()
+        if call.return_response:
+            return report
+        coordinator.send_dry_run_notification(report)
+        return None
 
     async def _handle_install_single(call: ServiceCall) -> None:
         await coordinator.async_install_single(call.data["entity_id"])
@@ -64,7 +76,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _handle_clear_snooze(call: ServiceCall) -> None:
         await coordinator.async_clear_snooze(call.data.get("entity_id"))
 
-    hass.services.async_register(DOMAIN, SERVICE_RUN_UPDATES, _handle_run_updates)
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RUN_UPDATES,
+        _handle_run_updates,
+        schema=vol.Schema({
+            vol.Optional("respect_blocking_entities", default=False): cv.boolean,
+        }),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DRY_RUN,
+        _handle_dry_run,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     hass.services.async_register(
         DOMAIN,
         SERVICE_INSTALL_SINGLE,
@@ -91,6 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _remove_services() -> None:
         hass.services.async_remove(DOMAIN, SERVICE_RUN_UPDATES)
+        hass.services.async_remove(DOMAIN, SERVICE_DRY_RUN)
         hass.services.async_remove(DOMAIN, SERVICE_INSTALL_SINGLE)
         hass.services.async_remove(DOMAIN, SERVICE_SNOOZE_UPDATE)
         hass.services.async_remove(DOMAIN, SERVICE_CLEAR_SNOOZE)

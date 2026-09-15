@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timedelta
 
 from awesomeversion import AwesomeVersion, AwesomeVersionStrategy
@@ -14,6 +15,7 @@ from homeassistant.components.persistent_notification import async_create
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_point_in_time,
@@ -22,6 +24,22 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    ACTION_INSTALL_NOW,
+    ACTION_PREFIX,
+    ACTION_SKIP_RUN,
+    ACTION_SNOOZE,
+    BACKUP_FAILURE_ISSUE_THRESHOLD,
+    CONF_ACTIONABLE_NOTIFICATIONS,
+    CONF_BLOCKING_ENTITIES,
+    CONF_MIN_RELEASE_AGE_DAYS,
+    DEFAULT_ACTIONABLE_NOTIFICATIONS,
+    DEFAULT_BLOCKING_ENTITIES,
+    DEFAULT_MIN_RELEASE_AGE_DAYS,
+    ISSUE_BACKUP_FAILING,
+    ISSUE_QUARANTINED_PREFIX,
+    MOBILE_ACTION_EVENT,
+    PRE_UPDATE_NOTIFICATION_TAG,
+    SEEN_STATE_FILE,
     BACKUP_STATE_FILE,
     BACKUP_TIMEOUT_SECONDS,
     CONF_ABORT_ON_BACKUP_FAILURE,
@@ -165,6 +183,20 @@ class AutoUpdaterCoordinator:
         self._deferred: list[dict] = []
         # Installed integration version (from manifest.json), set during entry setup
         self.version: str | None = None
+        # Release cooldown: entity_id -> {"version": latest_version, "first_seen": iso}
+        self._seen_versions: dict[str, dict] = {}
+        # Pending updates held back by the release cooldown (for the sensor)
+        self.cooldown_updates: list[dict] = []
+        # Actionable pre-update notification: the token the waiting run accepts,
+        # the action a user picked, and the event that ends the wait early
+        self._action_token: str | None = None
+        self._requested_action: str | None = None
+        self._action_event: asyncio.Event | None = None
+        self._unsub_action = None
+        # A "run skipped" notification is showing because of a blocking entity
+        self._blocked_notified = False
+        # Consecutive failed pre-update backups, for the Repairs issue
+        self._backup_failure_streak: int = 0
 
         # State exposed to sensor entities
         self.pending_count: int = 0
@@ -225,6 +257,7 @@ class AutoUpdaterCoordinator:
         await self._load_digest_state()
         await self._load_snooze()
         await self._load_backup_state()
+        await self._load_seen_versions()
         await self._async_reconcile_interrupted_run()
         await self._async_reschedule()
         # Scan for pending updates immediately, then every 30 minutes so the
@@ -233,12 +266,20 @@ class AutoUpdaterCoordinator:
         self._unsub_scan = async_track_time_interval(
             self.hass, self._async_scan_pending, timedelta(minutes=30)
         )
+        # Buttons on the pre-update mobile notification
+        if self._unsub_action is None:
+            self._unsub_action = self.hass.bus.async_listen(
+                MOBILE_ACTION_EVENT, self._async_handle_notification_action
+            )
 
     async def async_unload(self) -> None:
         self._cancel_timer()
         if self._unsub_scan is not None:
             self._unsub_scan()
             self._unsub_scan = None
+        if self._unsub_action is not None:
+            self._unsub_action()
+            self._unsub_action = None
         if self._unsub_resume is not None:
             self._unsub_resume()
             self._unsub_resume = None
@@ -334,89 +375,92 @@ class AutoUpdaterCoordinator:
             _LOGGER.warning("Auto Updater: disk space check error — %s", exc)
             return True, 999.0
 
-    def _filter_available_updates(self, log_skips: bool = False) -> list:
-        """Return all update entities that pass the current filter settings.
+    def _classify_updates(self, log_skips: bool = False) -> tuple[list, list[dict]]:
+        """Split pending update entities into installable ones and skipped ones.
+
+        Returns (available, skipped). Every skipped entry records a reason code
+        and a readable detail, so a dry run can explain it.
 
         Args:
-            log_skips: When True, logs INFO messages for each skipped entity
-                       (used during install runs). Keep False for background scans
-                       to avoid log noise.
+            log_skips: When True, logs each skip at INFO (used during install
+                       runs). Keep False for background scans to avoid log noise.
         """
         excluded: list[str] = self.options.get(CONF_EXCLUDED_ENTITIES, DEFAULT_EXCLUDED_ENTITIES)
         include_major: bool = self.options.get(CONF_INCLUDE_MAJOR, DEFAULT_INCLUDE_MAJOR)
         skip_beta: bool = self.options.get(CONF_SKIP_BETA, DEFAULT_SKIP_BETA)
-        update_addons: bool = self.options.get(CONF_UPDATE_ADDONS, DEFAULT_UPDATE_ADDONS)
-        update_hacs: bool = self.options.get(CONF_UPDATE_HACS, DEFAULT_UPDATE_HACS)
-        update_firmware: bool = self.options.get(CONF_UPDATE_FIRMWARE, DEFAULT_UPDATE_FIRMWARE)
-        update_system: bool = self.options.get(CONF_UPDATE_SYSTEM, DEFAULT_UPDATE_SYSTEM)
+        category_enabled = {
+            "Add-on": self.options.get(CONF_UPDATE_ADDONS, DEFAULT_UPDATE_ADDONS),
+            "HACS": self.options.get(CONF_UPDATE_HACS, DEFAULT_UPDATE_HACS),
+            "Firmware": self.options.get(CONF_UPDATE_FIRMWARE, DEFAULT_UPDATE_FIRMWARE),
+            "HA System": self.options.get(CONF_UPDATE_SYSTEM, DEFAULT_UPDATE_SYSTEM),
+        }
+        cooldown_days = self._min_release_age_days()
+        now = dt_util.now()
 
-        available = []
+        available: list = []
+        skipped: list[dict] = []
+
+        def skip(entity, reason: str, detail: str, **extra) -> None:
+            skipped.append({
+                "entity_id": entity.entity_id,
+                "title": entity.attributes.get("title") or entity.entity_id,
+                "reason": reason,
+                "detail": detail,
+                **extra,
+            })
+            if log_skips:
+                _LOGGER.info("Auto Updater: skipping %s — %s", entity.entity_id, detail)
+
         for entity in self.hass.states.async_all("update"):
             if entity.state != "on":
                 continue
-            if entity.entity_id in excluded:
-                if log_skips:
-                    _LOGGER.debug("Auto Updater: skipping excluded %s", entity.entity_id)
-                continue
-            if self._is_snoozed(entity.entity_id):
-                if log_skips:
-                    _LOGGER.info(
-                        "Auto Updater: skipping snoozed %s (until %s)",
-                        entity.entity_id, self._snoozed.get(entity.entity_id),
-                    )
-                continue
-            if entity.attributes.get("in_progress", False):
-                if log_skips:
-                    _LOGGER.info(
-                        "Auto Updater: skipping %s — install already in progress "
-                        "(likely started elsewhere, e.g. HA's Update All).",
-                        entity.entity_id,
-                    )
-                continue
-
-            source = self._get_update_source(entity.entity_id)
-            if source == "Add-on" and not update_addons:
-                if log_skips:
-                    _LOGGER.info("Auto Updater: skipping Add-on %s (Add-on updates disabled)", entity.entity_id)
-                continue
-            if source == "HACS" and not update_hacs:
-                if log_skips:
-                    _LOGGER.info("Auto Updater: skipping HACS %s (HACS updates disabled)", entity.entity_id)
-                continue
-            if source == "Firmware" and not update_firmware:
-                if log_skips:
-                    _LOGGER.info("Auto Updater: skipping Firmware %s (Firmware updates disabled)", entity.entity_id)
-                continue
-            if source == "HA System" and not update_system:
-                if log_skips:
-                    _LOGGER.info("Auto Updater: skipping System %s (System updates disabled)", entity.entity_id)
-                continue
-
+            eid = entity.entity_id
             attrs = entity.attributes
             latest = attrs.get("latest_version", "")
-            if (
-                not include_major
-                and not self._is_system_update(entity.entity_id)
-                and self._is_major_bump(attrs)
-            ):
-                if log_skips:
-                    _LOGGER.info(
-                        "Auto Updater: skipping major update for %s (%s → %s)",
-                        attrs.get("title") or entity.entity_id,
-                        attrs.get("installed_version", "?"),
-                        latest,
-                    )
+
+            if eid in excluded:
+                skip(entity, "excluded", "excluded in settings")
+                continue
+            if self._is_snoozed(eid):
+                until = self._snoozed.get(eid)
+                skip(entity, "snoozed", "snoozed until {}".format(until), until=until)
+                continue
+            if attrs.get("in_progress", False):
+                skip(
+                    entity, "in_progress",
+                    "install already in progress (likely started elsewhere, e.g. HA's Update All)",
+                )
+                continue
+            source = self._get_update_source(eid)
+            if not category_enabled.get(source, True):
+                skip(entity, "category_disabled", "{} updates are turned off".format(source))
+                continue
+            if not include_major and not self._is_system_update(eid) and self._is_major_bump(attrs):
+                skip(
+                    entity, "major_version",
+                    "major version update ({} → {})".format(attrs.get("installed_version", "?"), latest),
+                )
                 continue
             if skip_beta and self._is_prerelease(latest):
-                if log_skips:
-                    _LOGGER.info(
-                        "Auto Updater: skipping pre-release %s (%s)",
-                        attrs.get("title") or entity.entity_id,
-                        latest,
-                    )
+                skip(entity, "prerelease", "pre-release version {}".format(latest))
                 continue
+            if cooldown_days > 0:
+                ready_at = self._cooldown_ready_at(eid, latest, cooldown_days, now)
+                if ready_at > now:
+                    skip(
+                        entity, "cooldown",
+                        "version {} has been available for less than {} day(s); installs after {}".format(
+                            latest, cooldown_days, ready_at.isoformat(timespec="minutes")
+                        ),
+                        available_after=ready_at.isoformat(),
+                    )
+                    continue
             available.append(entity)
-        return available
+        return available, skipped
+
+    def _filter_available_updates(self, log_skips: bool = False) -> list:
+        """Return the update entities that pass the current filter settings."""
+        return self._classify_updates(log_skips)[0]
 
     def _build_pending_list(self, available: list) -> list[dict]:
         """Build the pending_updates list-of-dicts shared by scan and run."""
@@ -461,7 +505,14 @@ class AutoUpdaterCoordinator:
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("Auto Updater: pending-update verification error — %s", exc)
 
-        available = self._filter_available_updates(log_skips=False)
+        await self._async_track_versions()
+        available, skipped = self._classify_updates(log_skips=False)
+        self.cooldown_updates = [
+            {"entity_id": s["entity_id"], "title": s["title"], "available_after": s.get("available_after")}
+            for s in skipped
+            if s["reason"] == "cooldown"
+        ]
+        self._reconcile_quarantine_issues()
 
         self.pending_count = len(available)
         self.pending_updates = self._build_pending_list(available)
@@ -516,12 +567,16 @@ class AutoUpdaterCoordinator:
         """Public wrapper — refresh pending updates count without installing."""
         await self._async_scan_pending(None)
 
-    async def async_run_updates(self, resume: bool = False) -> None:
+    async def async_run_updates(self, resume: bool = False, manual: bool = False) -> None:
         """Run a full update pass.
 
         resume=True is used for the follow-up pass after a system update
         (Core/OS/Supervisor) restart: the pre-update backup and notice were
         already done minutes earlier, so they are skipped.
+
+        manual=True marks a run someone asked for (the Run updates now button
+        or the run_updates service). Manual runs ignore blocking entities,
+        which only hold back automatic runs.
         """
         if self._is_running:
             _LOGGER.warning("Auto Updater: run already in progress — skipping.")
@@ -529,11 +584,11 @@ class AutoUpdaterCoordinator:
         self._is_running = True
         self.last_run_status = "Running"
         self._notify_listeners()
-        await self._run_in_own_task(self._async_run_updates_task(resume))
+        await self._run_in_own_task(self._async_run_updates_task(resume, manual))
 
-    async def _async_run_updates_task(self, resume: bool) -> None:
+    async def _async_run_updates_task(self, resume: bool, manual: bool = False) -> None:
         try:
-            await self._async_run_updates_inner(resume=resume)
+            await self._async_run_updates_inner(resume=resume, manual=manual)
         except asyncio.CancelledError:
             _LOGGER.warning("Auto Updater: update run cancelled.")
             # Persist whatever the run had achieved so far so failure counts and
@@ -629,6 +684,7 @@ class AutoUpdaterCoordinator:
                     notification_id="ha_auto_updater_backup_progress",
                 )
                 backup_ok = await self._create_backup()
+                await self._async_note_backup_result(backup_ok)
                 self._dismiss_notification("ha_auto_updater_backup_progress")
                 self.hass.bus.async_fire(EVENT_BACKUP_COMPLETE, {"success": backup_ok, "entity_id": entity_id})
                 if backup_ok:
@@ -750,7 +806,7 @@ class AutoUpdaterCoordinator:
             self._run_task = None
             self._notify_listeners()
 
-    async def _async_run_updates_inner(self, resume: bool = False) -> None:
+    async def _async_run_updates_inner(self, resume: bool = False, manual: bool = False) -> None:
         _LOGGER.info(
             "Auto Updater: checking for available updates%s…",
             " (follow-up pass)" if resume else "",
@@ -761,6 +817,10 @@ class AutoUpdaterCoordinator:
             _LOGGER.warning("Auto Updater: Home Assistant is running in Safe Mode — aborting update run.")
             self.last_run_status = "Aborted (Safe Mode)"
             self._notify_listeners()
+            return
+
+        # --- Blocking entities (automatic runs only) ---
+        if not manual and self._skip_if_blocked():
             return
 
         # --- Disk Space Guard ---
@@ -797,6 +857,7 @@ class AutoUpdaterCoordinator:
             "Auto Updater: %d total update entities found.",
             len(self.hass.states.async_all("update")),
         )
+        await self._async_track_versions()
         available = self._filter_available_updates(log_skips=True)
 
         # Sort available updates so non-system updates execute first and system updates
@@ -857,6 +918,7 @@ class AutoUpdaterCoordinator:
                 notification_id="ha_auto_updater_backup_progress",
             )
             backup_ok = await self._create_backup()
+            await self._async_note_backup_result(backup_ok)
             self._dismiss_notification("ha_auto_updater_backup_progress")
             self.hass.bus.async_fire(EVENT_BACKUP_COMPLETE, {"success": backup_ok})
             if backup_ok:
@@ -908,14 +970,33 @@ class AutoUpdaterCoordinator:
                 "Auto Updater: sending pre-update notice, waiting %d min before installing…",
                 pre_notify_delay,
             )
+            # Only a notification sent for THIS wait can act on it: stale buttons
+            # on older notifications carry a different token and are ignored.
+            token = uuid.uuid4().hex[:12] if self._actionable_push_available() else None
+            self._action_event = asyncio.Event()
+            self._requested_action = None
+            self._action_token = token
             self._send_pre_update_notification(titles, pre_notify_delay)
-            # Sleep in short slices so flipping the Enabled switch aborts promptly
-            # instead of only being noticed once the full delay has elapsed.
-            remaining = pre_notify_delay * 60
-            while remaining > 0 and self.enabled:
-                step = min(15, remaining)
-                await asyncio.sleep(step)
-                remaining -= step
+            if token:
+                self._send_pre_update_push(titles, pre_notify_delay, token)
+            try:
+                # Wait in short slices so flipping the Enabled switch aborts
+                # promptly; a notification button ends the wait immediately.
+                remaining = pre_notify_delay * 60
+                while remaining > 0 and self.enabled and self._requested_action is None:
+                    step = min(15, remaining)
+                    try:
+                        await asyncio.wait_for(self._action_event.wait(), timeout=step)
+                    except TimeoutError:
+                        pass
+                    remaining -= step
+            finally:
+                self._action_token = None
+                self._action_event = None
+            action = self._requested_action
+            self._requested_action = None
+            if token:
+                self._clear_pre_update_push()
 
             # Abort if disabled during the wait
             if not self.enabled:
@@ -923,6 +1004,32 @@ class AutoUpdaterCoordinator:
                 self.last_run = dt_util.now()
                 self.last_run_status = "Aborted"
                 self._notify_listeners()
+                return
+
+            if action == ACTION_SKIP_RUN:
+                _LOGGER.info("Auto Updater: run skipped from the pre-update notification.")
+                self._dismiss_notification("ha_auto_updater_pre_update")
+                self.last_run = dt_util.now()
+                self.last_run_status = "Skipped (from notification)"
+                self._notify_listeners()
+                return
+            if action == ACTION_SNOOZE:
+                _LOGGER.info(
+                    "Auto Updater: snoozing %d update(s) for %d days from the pre-update notification.",
+                    len(available), DEFAULT_SNOOZE_DAYS,
+                )
+                self._dismiss_notification("ha_auto_updater_pre_update")
+                await self._async_snooze_many([e.entity_id for e in available], DEFAULT_SNOOZE_DAYS)
+                self.last_run = dt_util.now()
+                self.last_run_status = "Snoozed (from notification)"
+                self._notify_listeners()
+                return
+            if action == ACTION_INSTALL_NOW:
+                _LOGGER.info("Auto Updater: installing now, as requested from the pre-update notification.")
+
+            # Someone may have turned a blocking entity on after seeing the notice.
+            if not manual and self._skip_if_blocked():
+                self._dismiss_notification("ha_auto_updater_pre_update")
                 return
 
         # --- 5. Install updates ---
@@ -1200,6 +1307,19 @@ class AutoUpdaterCoordinator:
                     f["title"], f["entity_id"], FAILURE_ESCALATION_THRESHOLD, DEFAULT_SNOOZE_DAYS,
                 )
                 await self.async_snooze_update(f["entity_id"], DEFAULT_SNOOZE_DAYS)
+                details = {
+                    "title": str(f["title"]),
+                    "entity_id": str(f["entity_id"]),
+                    "failures": str(FAILURE_ESCALATION_THRESHOLD),
+                    "days": str(DEFAULT_SNOOZE_DAYS),
+                }
+                self._raise_issue(
+                    f"{ISSUE_QUARANTINED_PREFIX}{f['entity_id']}",
+                    "update_quarantined",
+                    details,
+                    fixable=True,
+                    data=details,
+                )
 
     async def _install_with_retry(
         self, entity_id: str, title: str, latest: str, is_system_update: bool, retry_delay: int
@@ -1741,13 +1861,18 @@ class AutoUpdaterCoordinator:
             data = await self._read_json_file(path, {})
             backups = data.get("backups", []) if isinstance(data, dict) else []
             self._tracked_backups = [b for b in backups if isinstance(b, dict)]
+            streak = data.get("consecutive_failures", 0) if isinstance(data, dict) else 0
+            self._backup_failure_streak = streak if isinstance(streak, int) and streak > 0 else 0
         except (json.JSONDecodeError, OSError) as exc:
             _LOGGER.warning("Auto Updater: could not load backup state — %s", exc)
 
     async def _save_backup_state(self) -> None:
         path = self.hass.config.path(BACKUP_STATE_FILE)
         tmp = path + ".tmp"
-        data = {"backups": list(self._tracked_backups)}
+        data = {
+            "backups": list(self._tracked_backups),
+            "consecutive_failures": self._backup_failure_streak,
+        }
 
         def _write():
             with open(tmp, "w", encoding="utf-8") as f:
@@ -2018,19 +2143,72 @@ class AutoUpdaterCoordinator:
     # Push notification helper
     # ------------------------------------------------------------------
 
-    def _send_push_notification(self, title: str, message: str) -> None:
+    def _send_push_notification(self, title: str, message: str, data: dict | None = None) -> None:
         """Forward a notification to a user-configured notify service (e.g. mobile app)."""
+        payload: dict = {"title": "Auto Updater — {}".format(title), "message": message}
+        if data:
+            payload["data"] = data
+        self._call_notify_service(payload)
+
+    def _call_notify_service(self, payload: dict) -> None:
         notify_service: str = self.options.get(CONF_NOTIFY_SERVICE, DEFAULT_NOTIFY_SERVICE)
         if not notify_service or "." not in notify_service:
             return
         domain, service = notify_service.split(".", 1)
         self.hass.async_create_task(
-            self.hass.services.async_call(
-                domain,
-                service,
-                {"title": "Auto Updater — {}".format(title), "message": message},
-            )
+            self.hass.services.async_call(domain, service, payload)
         )
+
+    def _actionable_push_available(self) -> bool:
+        """Buttons only work on the companion app's notify.mobile_app_* services."""
+        if not self.options.get(CONF_ACTIONABLE_NOTIFICATIONS, DEFAULT_ACTIONABLE_NOTIFICATIONS):
+            return False
+        service = str(self.options.get(CONF_NOTIFY_SERVICE, DEFAULT_NOTIFY_SERVICE) or "")
+        return service.startswith("notify.mobile_app_")
+
+    def _send_pre_update_push(self, titles: list[str], delay_minutes: int, token: str) -> None:
+        """Pre-update heads-up on the phone, with Install now / Skip / Snooze buttons."""
+        self._send_push_notification(
+            "Updates starting soon",
+            "{} update(s) will install in {} min: {}".format(
+                len(titles), delay_minutes, ", ".join(titles)
+            ),
+            data={
+                "tag": PRE_UPDATE_NOTIFICATION_TAG,
+                "actions": [
+                    {"action": f"{ACTION_PREFIX}_{ACTION_INSTALL_NOW}_{token}", "title": "Install now"},
+                    {"action": f"{ACTION_PREFIX}_{ACTION_SKIP_RUN}_{token}", "title": "Skip this run"},
+                    {
+                        "action": f"{ACTION_PREFIX}_{ACTION_SNOOZE}_{token}",
+                        "title": "Snooze {} days".format(DEFAULT_SNOOZE_DAYS),
+                    },
+                ],
+            },
+        )
+
+    def _clear_pre_update_push(self) -> None:
+        """Remove the heads-up from the phone once its buttons no longer do anything."""
+        self._call_notify_service(
+            {"message": "clear_notification", "data": {"tag": PRE_UPDATE_NOTIFICATION_TAG}}
+        )
+
+    async def _async_handle_notification_action(self, event) -> None:
+        """React to a button pressed on the pre-update mobile notification."""
+        action = str((event.data or {}).get("action") or "")
+        prefix = f"{ACTION_PREFIX}_"
+        if not action.startswith(prefix):
+            return
+        kind, _, token = action[len(prefix):].rpartition("_")
+        if kind not in (ACTION_INSTALL_NOW, ACTION_SKIP_RUN, ACTION_SNOOZE):
+            return
+        if not token or token != self._action_token:
+            _LOGGER.info(
+                "Auto Updater: ignoring '%s' from a notification whose run is no longer waiting.", kind
+            )
+            return
+        self._requested_action = kind
+        if self._action_event is not None:
+            self._action_event.set()
 
     # ------------------------------------------------------------------
     # Update source helper
@@ -2081,6 +2259,339 @@ class AutoUpdaterCoordinator:
         return self._get_update_source(entity_id) == "HACS"
 
     # ------------------------------------------------------------------
+    # Release cooldown
+    # ------------------------------------------------------------------
+
+    def _min_release_age_days(self) -> int:
+        try:
+            return max(0, int(float(self.options.get(CONF_MIN_RELEASE_AGE_DAYS, DEFAULT_MIN_RELEASE_AGE_DAYS))))
+        except (TypeError, ValueError):
+            return 0
+
+    def _track_versions(self) -> bool:
+        """Record when each pending version was first seen. Returns True if anything changed.
+
+        Update entities don't expose release dates, so "first seen" stands in
+        for release age. Tracking runs even while the cooldown is off, so
+        turning it on later uses real first-seen dates. Entries are dropped
+        only once an update is installed or skipped (state "off"); an entity
+        that is unavailable during startup keeps its date.
+        """
+        now = dt_util.now().isoformat()
+        changed = False
+        for entity in self.hass.states.async_all("update"):
+            eid = entity.entity_id
+            if entity.state == "off":
+                if self._seen_versions.pop(eid, None) is not None:
+                    changed = True
+                continue
+            if entity.state != "on":
+                continue
+            latest = entity.attributes.get("latest_version")
+            if not latest:
+                continue
+            record = self._seen_versions.get(eid)
+            if isinstance(record, dict) and record.get("version") == str(latest):
+                continue
+            self._seen_versions[eid] = {"version": str(latest), "first_seen": now}
+            changed = True
+        return changed
+
+    async def _async_track_versions(self) -> None:
+        if self._track_versions():
+            await self._save_seen_versions()
+
+    def _cooldown_ready_at(self, entity_id: str, latest, days: int, now: datetime) -> datetime:
+        """When this entity's pending version becomes old enough to install."""
+        record = self._seen_versions.get(entity_id)
+        first_seen = None
+        if isinstance(record, dict) and record.get("version") == str(latest):
+            first_seen = dt_util.parse_datetime(record.get("first_seen", "") or "")
+        if first_seen is None:
+            first_seen = now
+        if first_seen.tzinfo is None:
+            first_seen = dt_util.as_utc(first_seen)
+        return first_seen + timedelta(days=days)
+
+    async def _load_seen_versions(self) -> None:
+        path = self.hass.config.path(SEEN_STATE_FILE)
+        try:
+            data = await self._read_json_file(path, {})
+        except (json.JSONDecodeError, OSError) as exc:
+            _LOGGER.warning("Auto Updater: could not load version first-seen state — %s", exc)
+            return
+        if isinstance(data, dict):
+            self._seen_versions = {
+                k: v for k, v in data.items() if isinstance(v, dict) and "version" in v
+            }
+
+    async def _save_seen_versions(self) -> None:
+        path = self.hass.config.path(SEEN_STATE_FILE)
+        tmp = path + ".tmp"
+        data = dict(self._seen_versions)
+
+        def _write():
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, path)
+
+        try:
+            await self.hass.async_add_executor_job(_write)
+        except OSError as exc:
+            _LOGGER.error("Auto Updater: could not save version first-seen state — %s", exc)
+
+    # ------------------------------------------------------------------
+    # Blocking entities
+    # ------------------------------------------------------------------
+
+    def _active_blockers(self) -> list[dict]:
+        """Configured blocking entities that are currently on."""
+        blockers = []
+        for eid in self.options.get(CONF_BLOCKING_ENTITIES, DEFAULT_BLOCKING_ENTITIES) or []:
+            state = self.hass.states.get(eid)
+            if state is not None and state.state == "on":
+                blockers.append({
+                    "entity_id": eid,
+                    "name": state.attributes.get("friendly_name") or eid,
+                })
+        return blockers
+
+    def _skip_if_blocked(self) -> bool:
+        """Skip an automatic run while a blocking entity is on. Returns True if skipped."""
+        blockers = self._active_blockers()
+        if not blockers:
+            if self._blocked_notified:
+                self._dismiss_notification("ha_auto_updater_blocked")
+                self._blocked_notified = False
+            return False
+        names = ", ".join(b["name"] for b in blockers)
+        _LOGGER.info("Auto Updater: skipping automatic run — blocked by %s.", names)
+        self._send_status_notification(
+            "Run Skipped",
+            "The automatic update run was skipped because **{}** {} on. "
+            "Updates will be tried again on the next run.".format(
+                names, "is" if len(blockers) == 1 else "are"
+            ),
+            notification_id="ha_auto_updater_blocked",
+        )
+        self._blocked_notified = True
+        self.last_run = dt_util.now()
+        self.last_run_status = "Skipped (Blocked)"
+        self._notify_listeners()
+        return True
+
+    # ------------------------------------------------------------------
+    # Dry run
+    # ------------------------------------------------------------------
+
+    async def async_dry_run(self) -> dict:
+        """Report what a run would do right now, without backing up or installing."""
+        await self._async_track_versions()
+        available, skipped = self._classify_updates(log_skips=False)
+        available.sort(key=lambda e: 1 if self._is_system_update(e.entity_id) else 0)
+
+        max_updates = int(self.options.get(CONF_MAX_UPDATES_PER_RUN, DEFAULT_MAX_UPDATES_PER_RUN))
+        if max_updates > 0 and len(available) > max_updates:
+            for e in available[max_updates:]:
+                skipped.append({
+                    "entity_id": e.entity_id,
+                    "title": e.attributes.get("title") or e.entity_id,
+                    "reason": "run_cap",
+                    "detail": "over the limit of {} update(s) per run".format(max_updates),
+                })
+            available = available[:max_updates]
+
+        would_install: list[dict] = []
+        after_system_update = False
+        for e in available:
+            is_system = self._is_system_update(e.entity_id)
+            would_install.append({
+                "entity_id": e.entity_id,
+                "title": e.attributes.get("title") or e.entity_id,
+                "source": self._get_update_source(e.entity_id),
+                "from": e.attributes.get("installed_version") or "?",
+                "to": e.attributes.get("latest_version") or "?",
+                "system_update": is_system,
+                "needs_restart": (not is_system) and self._needs_restart(e.entity_id, e.attributes),
+                # Anything queued behind a Core/OS/Supervisor update waits for
+                # the follow-up pass that runs after it restarts.
+                "follow_up_pass": after_system_update,
+            })
+            if is_system:
+                after_system_update = True
+
+        first_pass = [w for w in would_install if not w["follow_up_pass"]]
+        restart_after = bool(
+            self.options.get(CONF_AUTO_RESTART, DEFAULT_AUTO_RESTART)
+            and not any(w["system_update"] for w in first_pass)
+            and any(w["needs_restart"] for w in first_pass)
+        )
+
+        blockers: list[dict] = []
+        if not self.enabled:
+            blockers.append({
+                "reason": "disabled",
+                "detail": "Automatic updates are turned off, so no scheduled run will happen.",
+                "automatic_runs_only": True,
+            })
+        if getattr(self.hass.config, "safe_mode", False):
+            blockers.append({
+                "reason": "safe_mode",
+                "detail": "Home Assistant is running in Safe Mode.",
+                "automatic_runs_only": False,
+            })
+        min_disk_gb = float(self.options.get(CONF_MIN_DISK_SPACE_GB, DEFAULT_MIN_DISK_SPACE_GB))
+        space_ok, free_gb = self._check_disk_space(min_disk_gb)
+        if not space_ok:
+            blockers.append({
+                "reason": "low_disk_space",
+                "detail": "Free disk space is {:.2f} GB, below the {:.2f} GB minimum.".format(free_gb, min_disk_gb),
+                "automatic_runs_only": False,
+            })
+        for b in self._active_blockers():
+            blockers.append({
+                "reason": "blocking_entity",
+                "entity_id": b["entity_id"],
+                "detail": "{} is on.".format(b["name"]),
+                "automatic_runs_only": True,
+            })
+
+        return {
+            "generated_at": dt_util.now().isoformat(),
+            "would_install": would_install,
+            "skipped": skipped,
+            "blockers": blockers,
+            "backup_before_update": bool(
+                would_install
+                and self.options.get(CONF_BACKUP_BEFORE_UPDATE, DEFAULT_BACKUP_BEFORE_UPDATE)
+            ),
+            "pre_update_delay_minutes": int(self.options.get(CONF_PRE_NOTIFY_DELAY, DEFAULT_PRE_NOTIFY_DELAY)),
+            "restart_after": restart_after,
+        }
+
+    def send_dry_run_notification(self, report: dict) -> None:
+        """Show a dry-run report as a persistent notification."""
+        lines: list[str] = []
+        for b in report["blockers"]:
+            lines.append("⛔ {}{}".format(
+                b["detail"], " *(automatic runs only)*" if b.get("automatic_runs_only") else ""
+            ))
+        if lines:
+            lines.append("")
+
+        items = report["would_install"]
+        if items:
+            lines.append("**Would install ({}):**".format(len(items)))
+            for w in items:
+                notes = []
+                if w["follow_up_pass"]:
+                    notes.append("in the follow-up pass")
+                if w["needs_restart"]:
+                    notes.append("needs a restart")
+                lines.append("- {} ({} → {}) [{}]{}".format(
+                    w["title"], w["from"], w["to"], w["source"],
+                    " — " + ", ".join(notes) if notes else "",
+                ))
+        else:
+            lines.append("**Nothing would be installed.**")
+
+        if report["skipped"]:
+            lines.append("")
+            lines.append("**Skipped ({}):**".format(len(report["skipped"])))
+            lines.extend("- {} — {}".format(s["title"], s["detail"]) for s in report["skipped"])
+
+        extras = []
+        if report["backup_before_update"]:
+            extras.append("a backup is taken first")
+        if items and report["pre_update_delay_minutes"]:
+            extras.append("installs start {} min after the heads-up notification".format(
+                report["pre_update_delay_minutes"]
+            ))
+        if report["restart_after"]:
+            extras.append("Home Assistant restarts afterwards")
+        if extras:
+            lines.extend(["", "When it runs, {}.".format("; ".join(extras))])
+
+        async_create(
+            self.hass,
+            "\n".join(lines),
+            title="Auto Updater — Preview of next run",
+            notification_id="ha_auto_updater_dry_run",
+        )
+
+    # ------------------------------------------------------------------
+    # Repairs issues
+    # ------------------------------------------------------------------
+
+    def _raise_issue(
+        self,
+        issue_id: str,
+        translation_key: str,
+        placeholders: dict[str, str],
+        *,
+        fixable: bool = False,
+        data: dict | None = None,
+    ) -> None:
+        try:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=fixable,
+                is_persistent=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=translation_key,
+                translation_placeholders=placeholders,
+                data=data,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Auto Updater: could not raise repair issue %s — %s", issue_id, exc)
+
+    def _clear_issue(self, issue_id: str) -> None:
+        try:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Auto Updater: could not clear repair issue %s — %s", issue_id, exc)
+
+    def _quarantine_issue_ids(self) -> list[str]:
+        try:
+            issues = list(ir.async_get(self.hass).issues)
+        except Exception:  # noqa: BLE001
+            return []
+        return [
+            issue_id
+            for key in issues
+            if isinstance(key, tuple) and len(key) == 2
+            for domain, issue_id in [key]
+            if domain == DOMAIN and isinstance(issue_id, str) and issue_id.startswith(ISSUE_QUARANTINED_PREFIX)
+        ]
+
+    def _reconcile_quarantine_issues(self) -> None:
+        """Drop quarantine issues whose snooze ended or whose update got installed."""
+        for issue_id in self._quarantine_issue_ids():
+            entity_id = issue_id[len(ISSUE_QUARANTINED_PREFIX):]
+            state = self.hass.states.get(entity_id)
+            if not self._is_snoozed(entity_id) or (state is not None and state.state == "off"):
+                self._clear_issue(issue_id)
+
+    async def _async_note_backup_result(self, ok: bool) -> None:
+        """Track consecutive pre-update backup failures and raise or clear the Repairs issue."""
+        if ok:
+            if self._backup_failure_streak:
+                self._backup_failure_streak = 0
+                await self._save_backup_state()
+                self._clear_issue(ISSUE_BACKUP_FAILING)
+            return
+        self._backup_failure_streak += 1
+        await self._save_backup_state()
+        if self._backup_failure_streak >= BACKUP_FAILURE_ISSUE_THRESHOLD:
+            self._raise_issue(
+                ISSUE_BACKUP_FAILING,
+                "backup_failing",
+                {"count": str(self._backup_failure_streak)},
+            )
+
+    # ------------------------------------------------------------------
     # Snooze (per-update temporary skip)
     # ------------------------------------------------------------------
 
@@ -2096,6 +2607,7 @@ class AutoUpdaterCoordinator:
             dt = dt_util.as_utc(dt)
         if dt <= dt_util.now():
             self._snoozed.pop(entity_id, None)  # expired — lazy cleanup
+            self._clear_issue(f"{ISSUE_QUARANTINED_PREFIX}{entity_id}")
             return False
         return True
 
@@ -2125,10 +2637,22 @@ class AutoUpdaterCoordinator:
         """Clear a single snooze, or all snoozes when entity_id is None."""
         if entity_id:
             self._snoozed.pop(entity_id, None)
+            self._clear_issue(f"{ISSUE_QUARANTINED_PREFIX}{entity_id}")
             _LOGGER.info("Auto Updater: cleared snooze for %s.", entity_id)
         else:
             self._snoozed.clear()
+            for issue_id in self._quarantine_issue_ids():
+                self._clear_issue(issue_id)
             _LOGGER.info("Auto Updater: cleared all snoozes.")
+        await self._save_snooze()
+        await self._async_scan_pending(None)
+
+    async def _async_snooze_many(self, entity_ids: list[str], days: int) -> None:
+        """Snooze several update entities at once (one save, one scan)."""
+        until = (dt_util.now() + timedelta(days=days)).isoformat()
+        for eid in entity_ids:
+            self._snoozed[eid] = until
+        _LOGGER.info("Auto Updater: snoozed %d update(s) for %d day(s).", len(entity_ids), days)
         await self._save_snooze()
         await self._async_scan_pending(None)
 

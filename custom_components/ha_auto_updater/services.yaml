@@ -1,6 +1,18 @@
 run_updates:
   name: Run Updates Now
   description: Immediately check for and install all available updates.
+  fields:
+    respect_blocking_entities:
+      name: Respect blocking entities
+      description: Skip the run while a configured blocking entity is on, the way scheduled runs do. Off by default, because calling the service is an explicit request.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+dry_run:
+  name: Preview Next Run
+  description: Report what a run would install and skip right now, without backing up or installing anything. Returns the report as response data, or shows it as a notification when no response is requested.
 
 install_single:
   name: Install Single Update

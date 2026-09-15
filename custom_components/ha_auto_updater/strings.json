@@ -20,7 +20,9 @@
           "notify_service": "Forward notifications to service",
           "weekly_digest": "Send weekly digest",
           "notify_on_new_updates": "Notify when new updates are detected",
-          "excluded_entities": "Exclude these items from auto-update"
+          "excluded_entities": "Exclude these items from auto-update",
+          "min_release_age_days": "Only install versions older than",
+          "blocking_entities": "Skip automatic runs while any of these is on"
         },
         "data_description": {
           "frequency": "How often Auto Updater looks for and installs updates. Hourly runs at the top of every hour and ignores the time and day below; Daily runs once a day at the time below; Weekly runs once a week on the day and time below. (A background scan also refreshes the pending count every 30 minutes, but never installs.)",
@@ -34,7 +36,9 @@
           "min_disk_space_gb": "Update runs will abort if free storage on the host is below this threshold (in GB).",
           "backup_keep_days": "Only used when 'Auto-Purge Old Backups' is on. Pre-update backups older than this many days are deleted.",
           "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
-          "notify_on_new_updates": "Requires a notify service above."
+          "notify_on_new_updates": "Requires a notify service above.",
+          "min_release_age_days": "Release cooldown. A new version is held back until it has been available this many days, so early bugs have time to surface and a hotfix to land. Counted from when Auto Updater first saw the version. 0 = install as soon as it appears. Install Single Update ignores this.",
+          "blocking_entities": "For example a guests, vacation or party-mode toggle. Scheduled runs and follow-up passes are skipped while any selected entity is on. Run Updates Now and Install Single Update still work."
         }
       }
     },
@@ -63,7 +67,9 @@
           "notify_service": "Forward notifications to service",
           "weekly_digest": "Send weekly digest",
           "notify_on_new_updates": "Notify when new updates are detected",
-          "excluded_entities": "Exclude these items from auto-update"
+          "excluded_entities": "Exclude these items from auto-update",
+          "min_release_age_days": "Only install versions older than",
+          "blocking_entities": "Skip automatic runs while any of these is on"
         },
         "data_description": {
           "frequency": "How often Auto Updater looks for and installs updates. Hourly runs at the top of every hour and ignores the time and day below; Daily runs once a day at the time below; Weekly runs once a week on the day and time below. (A background scan also refreshes the pending count every 30 minutes, but never installs.)",
@@ -77,9 +83,28 @@
           "min_disk_space_gb": "Update runs will abort if free storage on the host is below this threshold (in GB).",
           "backup_keep_days": "Only used when 'Auto-Purge Old Backups' is on. Pre-update backups older than this many days are deleted.",
           "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
-          "notify_on_new_updates": "Requires a notify service above."
+          "notify_on_new_updates": "Requires a notify service above.",
+          "min_release_age_days": "Release cooldown. A new version is held back until it has been available this many days, so early bugs have time to surface and a hotfix to land. Counted from when Auto Updater first saw the version. 0 = install as soon as it appears. Install Single Update ignores this.",
+          "blocking_entities": "For example a guests, vacation or party-mode toggle. Scheduled runs and follow-up passes are skipped while any selected entity is on. Run Updates Now and Install Single Update still work."
         }
       }
+    }
+  },
+  "issues": {
+    "update_quarantined": {
+      "title": "{title} update quarantined",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Retry {title}",
+            "description": "Auto Updater stopped installing **{title}** (`{entity_id}`) after it failed {failures} runs in a row, and snoozed it for {days} days.\n\nCheck the Home Assistant logs for the install error. Submit to clear the quarantine so the next run tries this update again."
+          }
+        }
+      }
+    },
+    "backup_failing": {
+      "title": "Pre-update backups are failing",
+      "description": "The backup Auto Updater takes before installing updates has failed {count} times in a row, so updates may be installing without a backup.\n\nCheck **Settings → System → Backups** and the logs, and free up disk space if needed. To stop installs until backups work, turn on the *Abort on Backup Failure* switch. This issue clears after the next successful backup."
     }
   }
 }

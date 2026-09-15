@@ -1,5 +1,6 @@
 {
   "services": {
-    "run_updates": "mdi:refresh"
+    "run_updates": "mdi:refresh",
+    "dry_run": "mdi:clipboard-text-search-outline"
   }
 }

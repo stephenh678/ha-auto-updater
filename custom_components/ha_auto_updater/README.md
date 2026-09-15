@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, pre-flight safety guards, auto-quarantine, event bus hooks, and full dashboard control.
 
-> **Version:** 1.3.1 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.4.0 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -23,8 +23,13 @@ A custom Home Assistant integration that automatically installs available update
 - **Per-update snooze** — temporarily skip a specific update for a set number of days via service call
 - **Auto restart** — optionally restarts HA after installing HACS updates, which only load on restart (add-on, firmware and system updates never trigger it)
 - **Interrupted-run recovery** — a run cut short by a Core/OS restart is written to history on startup and the remaining updates run in a follow-up pass
+- **Release cooldown** — hold back each new version until it has been available a set number of days
+- **Blocking entities** — skip automatic runs while guest, vacation or party mode (or any on/off entity) is on
+- **Preview next run** — a button and a `dry_run` service that show what would install and why anything is skipped
+- **Notification buttons** — Install now, Skip this run or Snooze from the pre-update notification on your phone
+- **Repairs integration** — quarantined updates and repeatedly failing backups appear under Settings → System → Repairs
 - **Release notes links** — pending list and notifications link straight to each update's release notes when available
-- **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`)
+- **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Skipped (Blocked)`, `Skipped (from notification)`, `Snoozed (from notification)`, `Aborted`, or `Never run`)
 
 ---
 
@@ -72,6 +77,8 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | Notify service | _(none)_ | Optional `domain.service` to forward notifications to (e.g. `notify.mobile_app_my_phone`). |
 | Max updates per run | `0` | Cap on updates per run (`0` = unlimited). |
 | Weekly digest | Off | Send a weekly summary of update activity every 7 days. |
+| Only install versions older than | `0` days | Release cooldown: hold back each new version until it has been available this many days (`0` = off). |
+| Skip automatic runs while any of these is on | _(none)_ | Blocking entities: scheduled runs and follow-up passes are skipped while any of them is on. |
 
 ---
 
@@ -96,18 +103,19 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `switch.ha_auto_updater_notify_on_failure` | Send notification when updates fail |
 | `switch.ha_auto_updater_weekly_digest` | Send weekly summary every 7 days |
 | `switch.ha_auto_updater_notify_on_new_updates` | Push notification when background scan detects new updates |
+| `switch.ha_auto_updater_notification_action_buttons` | Send the pre-update heads-up to your phone with Install now / Skip / Snooze buttons (needs a `notify.mobile_app_*` service) |
 
 ### Sensors
 
 | Entity ID | Description |
 |-----------|-------------|
-| `sensor.ha_auto_updater_auto_updater_pending_updates` | Count of available updates. Attributes: `updates`, `release_notes`, `snoozed`. |
+| `sensor.ha_auto_updater_auto_updater_pending_updates` | Count of available updates. Attributes: `updates`, `release_notes`, `snoozed`, `cooling_down`. |
 | `sensor.ha_auto_updater_auto_updater_failed_updates` | Number of updates that failed on the last run |
 | `sensor.ha_auto_updater_auto_updater_last_run` | Timestamp of the last run |
 | `sensor.ha_auto_updater_auto_updater_next_run` | Timestamp of the next scheduled run |
 | `sensor.ha_auto_updater_auto_updater_last_run_count` | Number of updates installed on last run |
 | `sensor.ha_auto_updater_auto_updater_last_run_duration` | Duration of last run in seconds |
-| `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`. |
+| `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Skipped (Blocked)`, `Skipped (from notification)`, `Snoozed (from notification)`, `Aborted`, or `Never run`. |
 | `sensor.ha_auto_updater_auto_updater_history` | Last 10 run logs in `recent_runs` attribute |
 
 ### Binary Sensors & Selects & Buttons
@@ -118,6 +126,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `select.ha_auto_updater_run_time` | Select | Pick scheduled run time (12:00 AM – 11:00 PM) |
 | `button.ha_auto_updater_run_updates_now` | Button | Immediately execute update process |
 | `button.ha_auto_updater_scan_for_updates` | Button | Refresh pending list without installing |
+| `button.ha_auto_updater_preview_next_run` | Button | Show what a run would install and skip, without installing anything |
 
 ---
 
@@ -154,9 +163,62 @@ action:
 
 | Service | Fields | Description |
 |---------|--------|-------------|
-| `ha_auto_updater.run_updates` | _(none)_ | Immediately check for and install all available updates |
+| `ha_auto_updater.run_updates` | `respect_blocking_entities` (opt, default false) | Immediately check for and install all available updates |
+| `ha_auto_updater.install_single` | `entity_id` (req) | Install one update with the same safety checks and pre-update backup |
+| `ha_auto_updater.dry_run` | _(none)_ | Preview what a run would do; returns the report as response data, or shows a notification |
 | `ha_auto_updater.snooze_update` | `entity_id` (req), `days` (opt, default 7) | Temporarily skip an update entity |
 | `ha_auto_updater.clear_snooze` | `entity_id` (opt) | Clear snooze for one entity or all snoozes |
+
+---
+
+## Release Cooldown, Blocking Entities & Notification Buttons
+
+### Release cooldown
+
+Set **Only install versions older than** to hold back each new version until it has been available that many days. Most broken releases get a hotfix within a few days, so a short cooldown avoids installing them.
+
+- Update entities don't report release dates, so the cooldown counts from when Auto Updater first saw the version. Tracking always runs, even with the cooldown at `0`, so turning it on later uses real dates.
+- A newer version replaces the one being held back and starts its own cooldown.
+- Held-back updates are listed in the `cooling_down` attribute of the pending updates sensor, with when each becomes eligible.
+- **Install Single Update** ignores the cooldown.
+
+### Blocking entities
+
+Pick entities under **Skip automatic runs while any of these is on**: a guests, vacation or party-mode toggle, a binary sensor, a switch, a schedule or a calendar.
+
+- Scheduled runs and follow-up passes are skipped while any selected entity is on. The status becomes `Skipped (Blocked)` and a notification names the entity.
+- The check repeats right before installs start, so turning a blocker on during the heads-up delay still stops the run.
+- **Run updates now**, **Install Single Update** and `run_updates` ignore blockers. Call `run_updates` with `respect_blocking_entities: true` from an automation that should honour them.
+
+### Preview next run
+
+Press **Preview next run**, or call `ha_auto_updater.dry_run`, to see what a run would do right now without backing up or installing anything. The report lists what would install and in what order, what is skipped and why, anything that would stop the run, and whether a backup or restart would happen.
+
+```yaml
+action: ha_auto_updater.dry_run
+response_variable: preview
+```
+
+Called with a response variable, the service returns the report as data. Without one, it shows a persistent notification.
+
+### Notification buttons
+
+When the notify service is a Home Assistant Companion app service (`notify.mobile_app_*`) and the pre-notify delay is above `0`, the heads-up also goes to your phone with three buttons:
+
+| Button | Effect |
+|--------|--------|
+| Install now | Ends the wait and starts installing |
+| Skip this run | Cancels this run (`Skipped (from notification)`); updates are tried again next run |
+| Snooze 7 days | Snoozes every update in this run for 7 days (`Snoozed (from notification)`) |
+
+Buttons only act on the run that sent them, so tapping one on an old notification does nothing. Turn off **Notification Action Buttons** to stop the phone heads-up.
+
+### Repairs
+
+Two problems are raised under **Settings → System → Repairs**:
+
+- **Update quarantined:** an update was auto-quarantined after failing 3 runs in a row. Use **Fix** to clear the quarantine so the next run retries it. The issue also clears when the snooze ends or the update gets installed.
+- **Pre-update backups are failing:** the backup failed on 2 runs in a row. The issue clears after the next successful backup.
 
 ---
 
@@ -189,6 +251,9 @@ On HA 2025.1+ the pre-update backup goes through the backup manager rather than 
 | Status shows `Interrupted` | HA restarted mid-run (usually a Core/OS update) | Nothing to do — the partial run was reconstructed and a follow-up pass is scheduled |
 | Status shows `Aborted (Backup Timeout)` | The pre-update backup took longer than 30 minutes and may still be running | The run is skipped even without strict backup mode, so nothing installs mid-backup. Updates retry on the next run. |
 | Zigbee firmware never installs | Before 1.3.1, hex firmware versions such as `0x1b000045` were mistaken for betas | Fixed in 1.3.1 |
+| Update never installs and is listed under `cooling_down` | The release cooldown is holding back a version that is still new | Wait, lower the cooldown, or use Install Single Update |
+| Status shows `Skipped (Blocked)` | A blocking entity was on when the run started | Turn it off, or run updates manually |
+| No buttons on the phone notification | The notify service isn't `notify.mobile_app_*`, the pre-notify delay is `0`, or Notification Action Buttons is off | Check those three settings |
 | Core/OS update listed as "pending verification" | Result is confirmed on the next 30-minute scan | Wait for the next scan, or press **Scan for updates** |
 
 ---
@@ -210,7 +275,8 @@ The integration keeps its own state in small JSON files in the Home Assistant co
 | `ha_auto_updater_history.json` | Last 50 runs (feeds the history sensor, weekly digest and failure counting) |
 | `ha_auto_updater_run.json` | Run currently in progress, system updates awaiting verification, and updates deferred to the follow-up pass. Removed automatically when nothing is outstanding. |
 | `ha_auto_updater_snooze.json` | Per-entity snooze expiry timestamps (manual snoozes and auto-quarantine) |
-| `ha_auto_updater_backups.json` | Pre-update backups the integration created, for auto-purge |
+| `ha_auto_updater_backups.json` | Pre-update backups the integration created, for auto-purge, and the count of consecutive backup failures |
+| `ha_auto_updater_seen.json` | When each pending version was first seen, for the release cooldown |
 | `ha_auto_updater_digest.json` | When the last weekly digest was sent |
 
 ---
