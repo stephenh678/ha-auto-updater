@@ -4,6 +4,7 @@
   "codeowners": ["@stephenh678"],
   "config_flow": true,
   "dependencies": [],
+  "after_dependencies": ["backup"],
   "documentation": "https://github.com/stephenh678/ha-auto-updater",
   "integration_type": "service",
   "iot_class": "local_push",
