@@ -30,6 +30,7 @@ except ImportError:
     sys.modules["homeassistant.helpers.entity_registry"] = MagicMock()
     sys.modules["homeassistant.helpers.event"] = MagicMock()
     sys.modules["homeassistant.helpers.typing"] = MagicMock()
+    sys.modules["homeassistant.loader"] = MagicMock()
     def _async_redact_data(data, to_redact):
         if isinstance(data, dict):
             return {

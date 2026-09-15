@@ -83,6 +83,7 @@ from .const import (
     DEFAULT_UPDATE_SYSTEM,
     DEFAULT_WEEKLY_DIGEST,
     DIGEST_STATE_FILE,
+    DOMAIN,
     EVENT_BACKUP_COMPLETE,
     EVENT_BACKUP_START,
     EVENT_ITEM_COMPLETE,
@@ -106,18 +107,38 @@ _LOGGER = logging.getLogger(__name__)
 
 EVENT_RUN_COMPLETE = "ha_auto_updater_run"
 
-# Pre-release version pattern: b1, b12, beta, rc1, rc, dev, alpha
-_PRERELEASE_RE = re.compile(r"(b\d+|\.beta|rc\d*|\.dev|alpha)", re.IGNORECASE)
+# Pre-release markers: 1.0b1, 2.0.0-rc1, 0.1.0.dev0, 1.2.3-alpha, 3.0.beta.
+# "b<digits>" only counts directly after a version digit and "rc" only when it
+# isn't inside a word, so hex firmware ids and build hashes don't read as betas.
+_PRERELEASE_RE = re.compile(r"((?<=\d)b\d+|\.beta|(?<![a-z])rc\d*|\.dev|alpha)", re.IGNORECASE)
+# Hex firmware versions, e.g. ZHA reports f"0x{version:08x}" -> "0x1b000045"
+_HEX_VERSION_RE = re.compile(r"^0x[0-9a-f]+$", re.IGNORECASE)
+# Trailing git build hash, e.g. "1.14.0-gcb84623"
+_GIT_HASH_SUFFIX_RE = re.compile(r"-g[0-9a-f]{7,}$", re.IGNORECASE)
 
-# HA system update entities — always install regardless of include_major setting.
-# OS, Supervisor, and Core use sequential or calendar versioning where a bump
-# in the major number is a routine release, not a breaking API change.
+# HA system update entities (Core, OS, Supervisor). They always install
+# regardless of include_major: they use sequential or calendar versioning where
+# a bump in the major number is a routine release, not a breaking API change.
+#
+# Known entity IDs are a fast path. Current HA names these entities
+# "<device> Update", older installs keep IDs without the suffix, and users can
+# rename them, so _is_system_update also checks the entity registry.
 _HA_SYSTEM_UPDATE_ENTITIES = {
     "update.home_assistant_supervisor",
+    "update.home_assistant_supervisor_update",
     "update.home_assistant_operating_system",
+    "update.home_assistant_operating_system_update",
     "update.home_assistant_core",
     "update.home_assistant_core_update",
 }
+# Unique ID prefixes the hassio integration gives its Core / OS / Supervisor
+# update entities ("home_assistant_os_version_latest", ...). Add-on update
+# entities use "<addon slug>_version_latest" instead.
+_HA_SYSTEM_UNIQUE_ID_PREFIXES = (
+    "home_assistant_core_",
+    "home_assistant_os_",
+    "home_assistant_supervisor_",
+)
 
 
 class AutoUpdaterCoordinator:
@@ -131,6 +152,9 @@ class AutoUpdaterCoordinator:
         self._unsub_resume = None
         self._is_running = False
         self._scan_in_progress = False
+        # Set by _create_backup when the backup didn't finish in time and may
+        # still be running; installs must not start on top of it.
+        self._last_backup_timed_out = False
         self._run_task: asyncio.Task | None = None
         self._listeners: list = []
         # System updates (Core/OS/Supervisor) that were triggered but whose
@@ -139,6 +163,8 @@ class AutoUpdaterCoordinator:
         # Updates queued behind a system-update restart, waiting for the
         # follow-up pass. Persisted so the pass survives the restart itself.
         self._deferred: list[dict] = []
+        # Installed integration version (from manifest.json), set during entry setup
+        self.version: str | None = None
 
         # State exposed to sensor entities
         self.pending_count: int = 0
@@ -171,6 +197,20 @@ class AutoUpdaterCoordinator:
     @property
     def debug(self) -> bool:
         return self.options.get(CONF_DEBUG, DEFAULT_DEBUG)
+
+    @property
+    def device_info(self) -> dict:
+        """Device registry info shared by every entity of this config entry."""
+        info = {
+            "identifiers": {(DOMAIN, self.entry.entry_id)},
+            "name": "HA Auto Updater",
+            "manufacturer": "stephenh678",
+            "entry_type": "service",
+            "configuration_url": "https://github.com/stephenh678/ha-auto-updater",
+        }
+        if self.version:
+            info["sw_version"] = self.version
+        return info
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -356,7 +396,7 @@ class AutoUpdaterCoordinator:
             latest = attrs.get("latest_version", "")
             if (
                 not include_major
-                and entity.entity_id not in _HA_SYSTEM_UPDATE_ENTITIES
+                and not self._is_system_update(entity.entity_id)
                 and self._is_major_bump(attrs)
             ):
                 if log_skips:
@@ -487,9 +527,11 @@ class AutoUpdaterCoordinator:
             _LOGGER.warning("Auto Updater: run already in progress — skipping.")
             return
         self._is_running = True
-        self._run_task = asyncio.current_task()
         self.last_run_status = "Running"
         self._notify_listeners()
+        await self._run_in_own_task(self._async_run_updates_task(resume))
+
+    async def _async_run_updates_task(self, resume: bool) -> None:
         try:
             await self._async_run_updates_inner(resume=resume)
         except asyncio.CancelledError:
@@ -504,6 +546,25 @@ class AutoUpdaterCoordinator:
             self._run_task = None
             self._notify_listeners()
 
+    async def _run_in_own_task(self, coro, cancelled_result=None):
+        """Run update work in a task the coordinator owns, and wait for it.
+
+        Unloading the integration cancels only that task. The caller (an
+        automation, script, button press or service call) waits through a
+        shield, so it isn't cancelled along with the run, and cancelling the
+        caller doesn't abort a run that is part-way through installing.
+        """
+        task = asyncio.get_running_loop().create_task(coro)
+        if not task.done():
+            self._run_task = task
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise  # the caller itself was cancelled; the run carries on
+            return cancelled_result  # the run was cancelled (unload), not the caller
+
     async def async_install_single(self, entity_id: str) -> bool:
         """Manually install an update for a single entity with safety guards & backup."""
         if self._is_running:
@@ -511,8 +572,12 @@ class AutoUpdaterCoordinator:
             return False
 
         self._is_running = True
-        self._run_task = asyncio.current_task()
         self._notify_listeners()
+        return await self._run_in_own_task(
+            self._async_install_single_task(entity_id), cancelled_result=False
+        )
+
+    async def _async_install_single_task(self, entity_id: str) -> bool:
         try:
             # --- Safe Mode Guard ---
             if getattr(self.hass.config, "safe_mode", False):
@@ -547,8 +612,8 @@ class AutoUpdaterCoordinator:
             installed = attrs.get("installed_version", "?")
             latest = attrs.get("latest_version", "?")
             release_url = attrs.get("release_url")
-            restart_required = attrs.get("restart_required", True)
-            is_system_update = entity_id in _HA_SYSTEM_UPDATE_ENTITIES
+            restart_required = self._needs_restart(entity_id, attrs)
+            is_system_update = self._is_system_update(entity_id)
 
             # --- Backup ---
             backup_enabled: bool = self.options.get(CONF_BACKUP_BEFORE_UPDATE, DEFAULT_BACKUP_BEFORE_UPDATE)
@@ -574,6 +639,21 @@ class AutoUpdaterCoordinator:
                         notification_id="ha_auto_updater_backup_done",
                     )
                 else:
+                    if self._last_backup_timed_out:
+                        _LOGGER.error(
+                            "Auto Updater: pre-update backup still running after %d min — aborting update for %s "
+                            "so it doesn't install while the backup is being written.",
+                            BACKUP_TIMEOUT_SECONDS // 60, entity_id,
+                        )
+                        self._send_status_notification(
+                            "Backup Timed Out — Update Aborted",
+                            "The pre-update backup did not finish within {} minutes and may still be running. "
+                            "Update of {} aborted; try again once the backup completes.".format(
+                                BACKUP_TIMEOUT_SECONDS // 60, title
+                            ),
+                            notification_id="ha_auto_updater_backup_failed",
+                        )
+                        return False
                     if abort_on_backup_failure:
                         _LOGGER.error(
                             "Auto Updater: pre-update backup failed and strict backup mode is enabled — aborting update for %s.",
@@ -721,7 +801,7 @@ class AutoUpdaterCoordinator:
 
         # Sort available updates so non-system updates execute first and system updates
         # (Core, OS, Supervisor) execute last, preventing background restarts from interrupting other updates.
-        available.sort(key=lambda e: 1 if e.entity_id in _HA_SYSTEM_UPDATE_ENTITIES else 0)
+        available.sort(key=lambda e: 1 if self._is_system_update(e.entity_id) else 0)
 
         # Apply max-updates-per-run cap (0 = unlimited)
         if max_updates > 0 and len(available) > max_updates:
@@ -787,6 +867,26 @@ class AutoUpdaterCoordinator:
                     notification_id="ha_auto_updater_backup_done",
                 )
             else:
+                if self._last_backup_timed_out:
+                    # Even without strict mode: "proceed anyway" is meant for a
+                    # backup that failed or isn't available, not one that is
+                    # still being written while add-ons get replaced.
+                    _LOGGER.error(
+                        "Auto Updater: pre-update backup still running after %d min — aborting update run.",
+                        BACKUP_TIMEOUT_SECONDS // 60,
+                    )
+                    self._send_status_notification(
+                        "Backup Timed Out — Run Aborted",
+                        "The pre-update backup did not finish within {} minutes and may still be running. "
+                        "Update run aborted; updates will be retried on the next run.".format(
+                            BACKUP_TIMEOUT_SECONDS // 60
+                        ),
+                        notification_id="ha_auto_updater_backup_failed",
+                    )
+                    self.last_run = dt_util.now()
+                    self.last_run_status = "Aborted (Backup Timeout)"
+                    self._notify_listeners()
+                    return
                 if abort_on_backup_failure:
                     _LOGGER.error(
                         "Auto Updater: pre-update backup failed and strict backup mode is enabled — aborting update run."
@@ -863,8 +963,7 @@ class AutoUpdaterCoordinator:
                 "entity_id": entity_id, "title": title,
                 "from": installed, "to": latest, "release_url": release_url,
             }
-            # Capture restart_required before install while state is still "on"
-            restart_required_map[entity_id] = attrs.get("restart_required", True)
+            restart_required_map[entity_id] = self._needs_restart(entity_id, attrs)
 
             # Stagger delay before each update (except the first)
             if i > 0 and stagger_delay > 0:
@@ -877,7 +976,7 @@ class AutoUpdaterCoordinator:
                 _LOGGER.info("Auto Updater: skipping %s — already up to date.", title)
                 continue
 
-            is_system_update = entity_id in _HA_SYSTEM_UPDATE_ENTITIES
+            is_system_update = self._is_system_update(entity_id)
 
             run_marker["current"] = item
             await self._save_run_state(run_marker)
@@ -1004,9 +1103,9 @@ class AutoUpdaterCoordinator:
         # --- 8. Restart HA if enabled and any installed update requires it ---
         auto_restart: bool = self.options.get(CONF_AUTO_RESTART, DEFAULT_AUTO_RESTART)
         non_system_updates = [
-            u for u in updated_items if u["entity_id"] not in _HA_SYSTEM_UPDATE_ENTITIES
+            u for u in updated_items if not self._is_system_update(u["entity_id"])
         ]
-        needs_restart = any(restart_required_map.get(u["entity_id"], True) for u in non_system_updates)
+        needs_restart = any(restart_required_map.get(u["entity_id"], False) for u in non_system_updates)
 
         if system_updates_triggered:
             _LOGGER.info(
@@ -1381,6 +1480,7 @@ class AutoUpdaterCoordinator:
     # ------------------------------------------------------------------
 
     async def _create_backup(self) -> bool:
+        self._last_backup_timed_out = False
         name = "pre_update_{}".format(dt_util.now().strftime("%Y%m%d_%H%M"))
 
         # HA 2025.1+ backup manager. The backup.create service returns no id and
@@ -1394,6 +1494,13 @@ class AutoUpdaterCoordinator:
                     self._create_backup_via_manager(manager, name),
                     timeout=BACKUP_TIMEOUT_SECONDS,
                 )
+            except TimeoutError:
+                self._last_backup_timed_out = True
+                _LOGGER.error(
+                    "Auto Updater: backup via backup manager did not finish within %d min — it may still be running.",
+                    BACKUP_TIMEOUT_SECONDS // 60,
+                )
+                return False
             except (TypeError, AttributeError, NotImplementedError) as exc:
                 # API shape differs from what we expect — use the service instead.
                 _LOGGER.debug("Auto Updater: backup manager API unavailable (%s) — using service.", exc)
@@ -1416,6 +1523,13 @@ class AutoUpdaterCoordinator:
                 continue
             try:
                 ref = await self._call_backup_service(domain, service, data)
+            except TimeoutError:
+                self._last_backup_timed_out = True
+                _LOGGER.error(
+                    "Auto Updater: backup via %s.%s did not finish within %d min — it may still be running.",
+                    domain, service, BACKUP_TIMEOUT_SECONDS // 60,
+                )
+                return False
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.warning("Auto Updater: backup via %s.%s failed — %s", domain, service, exc)
                 return False
@@ -1463,15 +1577,19 @@ class AutoUpdaterCoordinator:
             "Auto Updater: creating backup '%s' via backup manager (agents=%s, addons=%s)",
             name, agent_ids, include_addons,
         )
-        await manager.async_create_backup(
-            agent_ids=agent_ids,
-            include_addons=None,
-            include_all_addons=include_addons,
-            include_database=True,
-            include_folders=None,
-            include_homeassistant=True,
-            name=name,
-            password=None,
+        # Shielded: if our timeout fires, stop waiting but leave HA's own backup
+        # job alone. Cancelling it mid-write would leave a broken backup.
+        await asyncio.shield(
+            manager.async_create_backup(
+                agent_ids=agent_ids,
+                include_addons=None,
+                include_all_addons=include_addons,
+                include_database=True,
+                include_folders=None,
+                include_homeassistant=True,
+                name=name,
+                password=None,
+            )
         )
         # async_create_backup awaits completion on current HA, but guard against
         # a version that only initiates: wait until the manager is idle or the
@@ -1504,10 +1622,13 @@ class AutoUpdaterCoordinator:
 
     async def _call_backup_service(self, domain: str, service: str, data: dict):
         """Create a backup. Return its slug/id if the service can report one."""
+        # Shielded so a timeout stops our wait without cancelling the backup itself.
         if self._service_supports_response(domain, service):
             resp = await asyncio.wait_for(
-                self.hass.services.async_call(
-                    domain, service, data, blocking=True, return_response=True
+                asyncio.shield(
+                    self.hass.services.async_call(
+                        domain, service, data, blocking=True, return_response=True
+                    )
                 ),
                 timeout=BACKUP_TIMEOUT_SECONDS,
             )
@@ -1519,7 +1640,7 @@ class AutoUpdaterCoordinator:
                 )
             return None
         await asyncio.wait_for(
-            self.hass.services.async_call(domain, service, data, blocking=True),
+            asyncio.shield(self.hass.services.async_call(domain, service, data, blocking=True)),
             timeout=BACKUP_TIMEOUT_SECONDS,
         )
         return None
@@ -1917,7 +2038,7 @@ class AutoUpdaterCoordinator:
 
     def _get_update_source(self, entity_id: str) -> str:
         """Categorise an update entity as HA System, Add-on, HACS, Firmware, or Custom."""
-        if entity_id in _HA_SYSTEM_UPDATE_ENTITIES:
+        if self._is_system_update(entity_id):
             return "HA System"
         registry = er.async_get(self.hass)
         entry = registry.async_get(entity_id)
@@ -1935,6 +2056,29 @@ class AutoUpdaterCoordinator:
         if device_class == FIRMWARE_DEVICE_CLASS or platform in FIRMWARE_PLATFORMS:
             return "Firmware"
         return "Custom"
+
+    def _is_system_update(self, entity_id: str) -> bool:
+        """True for the Core, OS and Supervisor update entities, however they are named."""
+        if entity_id in _HA_SYSTEM_UPDATE_ENTITIES:
+            return True
+        entry = er.async_get(self.hass).async_get(entity_id)
+        if entry is None or entry.platform != "hassio":
+            return False
+        unique_id = entry.unique_id
+        return isinstance(unique_id, str) and unique_id.startswith(_HA_SYSTEM_UNIQUE_ID_PREFIXES)
+
+    def _needs_restart(self, entity_id: str, attrs) -> bool:
+        """Whether installing this update needs Home Assistant restarted to take effect.
+
+        Update entities have no restart-required attribute, so this is decided by
+        source: HACS updates replace integration code that only loads on restart,
+        while add-ons, device firmware and system updates don't need HA
+        restarted. An explicit restart_required attribute still wins if an
+        integration ever sets one.
+        """
+        if "restart_required" in attrs:
+            return bool(attrs.get("restart_required"))
+        return self._get_update_source(entity_id) == "HACS"
 
     # ------------------------------------------------------------------
     # Snooze (per-update temporary skip)
@@ -2091,13 +2235,17 @@ class AutoUpdaterCoordinator:
     def _is_prerelease(version: str) -> bool:
         if not version or str(version) in ("?", ""):
             return False
+        text = str(version).strip()
+        if _HEX_VERSION_RE.match(text):
+            return False  # hex firmware id (ZHA), not a release name
+        text = _GIT_HASH_SUFFIX_RE.sub("", text)
         try:
-            ver = AwesomeVersion(str(version))
+            ver = AwesomeVersion(text)
             if ver.modifier is not None or ver.modifier_type is not None:
                 return True
         except Exception:
             pass
-        return bool(_PRERELEASE_RE.search(str(version)))
+        return bool(_PRERELEASE_RE.search(text))
 
     # ------------------------------------------------------------------
     # Listener pattern

@@ -34,6 +34,7 @@ async def async_get_config_entry_diagnostics(
         "entry_id": entry.entry_id,
         "domain": DOMAIN,
         "version": entry.version,
+        "integration_version": coordinator.version,
         "options": dict(entry.options),
         "coordinator_state": {
             "is_running": coordinator._is_running,

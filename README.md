@@ -8,7 +8,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule — with backup protection, pre-flight disk space guards, granular category switches, auto-quarantine, custom event hooks, and full dashboard control.
 
-> **Version:** 1.3.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.3.1 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -40,7 +40,7 @@ Home Assistant surfaces updates but won't install them for you. **HA Auto Update
 - **Beta/RC skipping** — optionally skips pre-release versions
 - **Per-update snooze** — temporarily skip a specific update for N days via service call
 - **Event Bus hooks** — fires structured events on `hass.bus` for external automations
-- **Auto restart** — optionally restarts HA after installing updates that require it
+- **Auto restart** — optionally restarts HA after installing HACS updates, which only load on restart (add-on, firmware and system updates never trigger it)
 - **Interrupted-run recovery** — a run cut short by a Core/OS restart is written to history on startup and the remaining updates run in a follow-up pass
 - **Rich sensors** — pending count, failed count, last-run status/duration/count, next run, history, and binary sensor
 

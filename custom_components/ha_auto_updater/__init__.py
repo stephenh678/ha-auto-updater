@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
 from .const import (
     DATA_COORDINATOR,
@@ -36,6 +37,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     coordinator = AutoUpdaterCoordinator(hass, entry)
+    integration = await async_get_integration(hass, DOMAIN)
+    coordinator.version = str(integration.version) if integration.version else None
     hass.data[DOMAIN][entry.entry_id] = {DATA_COORDINATOR: coordinator}
 
     await coordinator.async_setup()

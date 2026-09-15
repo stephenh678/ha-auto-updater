@@ -44,13 +44,7 @@ class UpdatesAvailableBinarySensor(BinarySensorEntity):
 
     @property
     def device_info(self) -> dict:
-        return {
-            "identifiers": {(DOMAIN, self._entry.entry_id)},
-            "name": "HA Auto Updater",
-            "manufacturer": "Custom",
-            "model": "Auto Updater",
-            "entry_type": "service",
-        }
+        return self._coordinator.device_info
 
     @property
     def is_on(self) -> bool:

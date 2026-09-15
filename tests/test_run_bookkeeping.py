@@ -100,6 +100,26 @@ class TestEntityKeyedFailures(unittest.TestCase):
         self.assertEqual(coord.failed_updates, [{"title": "B", "entity_id": "update.b"}])
 
 
+class TestDeviceInfo(unittest.TestCase):
+
+    def test_device_info_includes_version_when_known(self):
+        coord, _ = _make_coord()
+        coord.entry.entry_id = "abc"
+        coord.version = "1.3.0"
+        info = coord.device_info
+        self.assertEqual(info["identifiers"], {("ha_auto_updater", "abc")})
+        self.assertEqual(info["name"], "HA Auto Updater")
+        self.assertEqual(info["manufacturer"], "stephenh678")
+        self.assertEqual(info["entry_type"], "service")
+        self.assertEqual(info["sw_version"], "1.3.0")
+        self.assertNotIn("model", info)
+
+    def test_device_info_omits_version_when_unknown(self):
+        coord, _ = _make_coord()
+        coord.entry.entry_id = "abc"
+        self.assertNotIn("sw_version", coord.device_info)
+
+
 class TestFirmwareDetection(unittest.TestCase):
 
     def _source_for(self, platform, device_class):
@@ -392,6 +412,215 @@ class TestRunLoopSystemUpdates(unittest.TestCase):
         self.assertEqual(failed[0]["entity_id"], "update.addon_broken")
         self.assertEqual(coord.failed_updates, [{"title": "Broken", "entity_id": "update.addon_broken"}])
         self.assertEqual(coord.last_run_status, "All failed")
+
+
+class TestPrereleaseDetection(unittest.TestCase):
+
+    def test_hex_firmware_versions_are_not_prereleases(self):
+        # ZHA formats firmware as f"0x{version:08x}"
+        for v in ("0x1b000045", "0x0000001b", "0x10b12001"):
+            self.assertFalse(AutoUpdaterCoordinator._is_prerelease(v), v)
+
+    def test_git_hash_suffix_is_not_a_prerelease(self):
+        self.assertFalse(AutoUpdaterCoordinator._is_prerelease("1.14.0-gcb84623"))
+
+    def test_real_prereleases_still_detected(self):
+        for v in ("1.0.0b1", "2.0.0-rc1", "2.0rc2", "0.1.0.dev0", "1.2.3-alpha", "3.0.beta"):
+            self.assertTrue(AutoUpdaterCoordinator._is_prerelease(v), v)
+
+
+class TestSystemUpdateDetection(unittest.TestCase):
+
+    @staticmethod
+    def _registry(platform, unique_id):
+        registry = MagicMock()
+        if platform is None:
+            registry.async_get.return_value = None
+        else:
+            reg_entry = MagicMock()
+            reg_entry.platform = platform
+            reg_entry.unique_id = unique_id
+            registry.async_get.return_value = reg_entry
+        return registry
+
+    def test_current_default_entity_ids_are_known(self):
+        coord, _ = _make_coord()
+        for eid in (
+            "update.home_assistant_core_update",
+            "update.home_assistant_operating_system_update",
+            "update.home_assistant_supervisor_update",
+        ):
+            self.assertTrue(coord._is_system_update(eid), eid)
+
+    def test_renamed_system_entities_detected_by_unique_id(self):
+        for uid in (
+            "home_assistant_core_version_latest",
+            "home_assistant_os_version_latest",
+            "home_assistant_supervisor_version_latest",
+        ):
+            coord, _ = _make_coord()
+            with patch.object(coord_mod.er, "async_get", return_value=self._registry("hassio", uid)):
+                self.assertTrue(coord._is_system_update("update.my_renamed_entity"), uid)
+                self.assertEqual(coord._get_update_source("update.my_renamed_entity"), "HA System")
+
+    def test_addons_and_other_platforms_are_not_system(self):
+        for platform, uid in (
+            ("hassio", "core_ssh_version_latest"),
+            ("mqtt", "home_assistant_os_version_latest"),
+            (None, None),
+        ):
+            coord, _ = _make_coord()
+            with patch.object(coord_mod.er, "async_get", return_value=self._registry(platform, uid)):
+                self.assertFalse(coord._is_system_update("update.something"), (platform, uid))
+
+
+class TestRestartDecision(unittest.TestCase):
+
+    def test_only_hacs_updates_need_restart(self):
+        coord, _ = _make_coord()
+        for source, expected in (
+            ("HACS", True), ("Add-on", False), ("Firmware", False), ("HA System", False), ("Custom", False),
+        ):
+            coord._get_update_source = MagicMock(return_value=source)
+            self.assertEqual(coord._needs_restart("update.x", {}), expected, source)
+
+    def test_explicit_attribute_wins(self):
+        coord, _ = _make_coord()
+        coord._get_update_source = MagicMock(return_value="Add-on")
+        self.assertTrue(coord._needs_restart("update.x", {"restart_required": True}))
+        coord._get_update_source = MagicMock(return_value="HACS")
+        self.assertFalse(coord._needs_restart("update.x", {"restart_required": False}))
+
+    def _run_single_update(self, source):
+        coord, hass = _make_coord({
+            CONF_BACKUP_BEFORE_UPDATE: False,
+            CONF_PRE_NOTIFY_DELAY: 0,
+            CONF_STAGGER_DELAY: 0,
+            "auto_restart": True,
+        })
+        upd = _state("on", title="Thing", installed_version="1.0", latest_version="1.1")
+        upd.entity_id = "update.thing"
+        hass.states.async_all.return_value = [upd]
+        hass.states.get.return_value = upd
+        coord._get_update_source = MagicMock(return_value=source)
+        coord._save_run_state = AsyncMock()
+        coord._append_and_save_history = AsyncMock()
+        coord._send_success_notification = MagicMock()
+        coord._send_status_notification = MagicMock()
+        with patch.object(coord_mod.asyncio, "sleep", AsyncMock()):
+            asyncio.run(coord._async_run_updates_inner())
+        return [
+            c for c in hass.services.async_call.call_args_list
+            if c.args[:2] == ("homeassistant", "restart")
+        ]
+
+    def test_run_does_not_restart_after_firmware_or_addon_update(self):
+        self.assertEqual(self._run_single_update("Firmware"), [])
+        self.assertEqual(self._run_single_update("Add-on"), [])
+
+    def test_run_restarts_after_hacs_update(self):
+        self.assertEqual(len(self._run_single_update("HACS")), 1)
+
+
+class TestBackupTimeout(unittest.TestCase):
+
+    def _coord_with_service_backup(self, side_effect):
+        coord, hass = _make_coord()
+        coord._get_backup_manager = MagicMock(return_value=None)
+        hass.services.has_service.return_value = True
+        coord._call_backup_service = AsyncMock(side_effect=side_effect)
+        coord._record_backup = AsyncMock()
+        return coord
+
+    def test_service_timeout_sets_flag(self):
+        coord = self._coord_with_service_backup(TimeoutError())
+        self.assertFalse(asyncio.run(coord._create_backup()))
+        self.assertTrue(coord._last_backup_timed_out)
+        coord._record_backup.assert_not_awaited()
+
+    def test_other_failure_does_not_set_flag(self):
+        coord = self._coord_with_service_backup(RuntimeError("nope"))
+        coord._last_backup_timed_out = True  # stale value from an earlier run is reset
+        self.assertFalse(asyncio.run(coord._create_backup()))
+        self.assertFalse(coord._last_backup_timed_out)
+
+    def test_run_aborts_on_timeout_even_without_strict_mode(self):
+        coord, hass = _make_coord({
+            CONF_BACKUP_BEFORE_UPDATE: True,
+            "abort_on_backup_failure": False,
+            CONF_PRE_NOTIFY_DELAY: 0,
+        })
+        addon = _state("on", title="SSH", installed_version="1.0", latest_version="1.1")
+        addon.entity_id = "update.addon_ssh"
+        hass.states.async_all.return_value = [addon]
+        coord._send_status_notification = MagicMock()
+
+        async def _timed_out():
+            coord._last_backup_timed_out = True
+            return False
+
+        coord._create_backup = _timed_out
+        asyncio.run(coord._async_run_updates_inner())
+
+        self.assertEqual(coord.last_run_status, "Aborted (Backup Timeout)")
+        install_calls = [
+            c for c in hass.services.async_call.call_args_list if c.args[:2] == ("update", "install")
+        ]
+        self.assertEqual(install_calls, [])
+
+
+class TestRunTaskIsolation(unittest.TestCase):
+
+    def test_unload_cancels_run_but_not_the_caller(self):
+        coord, _ = _make_coord()
+        coord._async_finalize_run_marker = AsyncMock(return_value=[])
+
+        async def scenario():
+            started = asyncio.Event()
+
+            async def slow_run(resume=False):
+                started.set()
+                await asyncio.sleep(3600)
+
+            coord._async_run_updates_inner = slow_run
+            caller = asyncio.create_task(coord.async_run_updates())
+            await started.wait()
+            await coord.async_unload()
+            await caller  # would raise CancelledError if the caller were cancelled too
+            return caller
+
+        caller = asyncio.run(scenario())
+        self.assertFalse(caller.cancelled())
+        self.assertEqual(coord.last_run_status, "Aborted (Cancelled)")
+        self.assertFalse(coord._is_running)
+        coord._async_finalize_run_marker.assert_awaited_once()
+
+    def test_cancelling_caller_does_not_abort_run(self):
+        coord, _ = _make_coord()
+
+        async def scenario():
+            release = asyncio.Event()
+            finished = []
+
+            async def run(resume=False):
+                await release.wait()
+                finished.append(True)
+
+            coord._async_run_updates_inner = run
+            caller = asyncio.create_task(coord.async_run_updates())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            caller.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await caller
+            self.assertTrue(coord._is_running)
+            run_task = coord._run_task
+            release.set()
+            await run_task
+            return finished
+
+        self.assertEqual(asyncio.run(scenario()), [True])
+        self.assertFalse(coord._is_running)
 
 
 if __name__ == "__main__":

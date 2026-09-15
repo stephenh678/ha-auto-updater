@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, pre-flight safety guards, auto-quarantine, event bus hooks, and full dashboard control.
 
-> **Version:** 1.3.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.3.1 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -21,10 +21,10 @@ A custom Home Assistant integration that automatically installs available update
 - **Major version protection** — skips major version bumps by default (calendar-versioned packages like HA Core/OS/Supervisor are handled correctly and are never filtered)
 - **Beta/RC skipping** — optionally skips pre-release versions
 - **Per-update snooze** — temporarily skip a specific update for a set number of days via service call
-- **Auto restart** — optionally restarts HA after installing updates that require it
+- **Auto restart** — optionally restarts HA after installing HACS updates, which only load on restart (add-on, firmware and system updates never trigger it)
 - **Interrupted-run recovery** — a run cut short by a Core/OS restart is written to history on startup and the remaining updates run in a follow-up pass
 - **Release notes links** — pending list and notifications link straight to each update's release notes when available
-- **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`)
+- **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`)
 
 ---
 
@@ -89,7 +89,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `switch.ha_auto_updater_auto_quarantine_failing_updates` | Auto-snooze entities failing 3 consecutive runs for 7 days |
 | `switch.ha_auto_updater_backup_before_updating` | Create a full backup before installing updates |
 | `switch.ha_auto_updater_auto_purge_old_backups` | Auto-delete pre-update backups created past retention period |
-| `switch.ha_auto_updater_restart_after_updates` | Restart HA after installing updates that require it |
+| `switch.ha_auto_updater_restart_after_updates` | Restart HA after installing HACS updates (add-on, firmware and Core/OS/Supervisor updates never trigger a restart) |
 | `switch.ha_auto_updater_skip_beta_rc_versions` | Skip beta and release-candidate versions |
 | `switch.ha_auto_updater_debug_logging` | Enable verbose debug logging |
 | `switch.ha_auto_updater_notify_on_success` | Send notification when updates succeed |
@@ -107,7 +107,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `sensor.ha_auto_updater_auto_updater_next_run` | Timestamp of the next scheduled run |
 | `sensor.ha_auto_updater_auto_updater_last_run_count` | Number of updates installed on last run |
 | `sensor.ha_auto_updater_auto_updater_last_run_duration` | Duration of last run in seconds |
-| `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`. |
+| `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`. |
 | `sensor.ha_auto_updater_auto_updater_history` | Last 10 run logs in `recent_runs` attribute |
 
 ### Binary Sensors & Selects & Buttons
@@ -164,6 +164,7 @@ action:
 
 Core, OS and Supervisor updates restart Home Assistant (or the host) part-way through installing, so they are handled differently from add-ons, HACS and firmware:
 
+- **Recognised by the entity registry.** Core, OS and Supervisor update entities are identified by their registry unique ID, so they are handled correctly whether their entity IDs end in `_update` (current HA), predate that naming, or were renamed.
 - **Installed last, one per run.** System updates are sorted to the end of the queue. As soon as one is triggered, the remaining updates are **deferred** and a follow-up pass runs automatically about 10 minutes later (or 10 minutes after HA comes back up). The follow-up pass skips the backup and the pre-update notice, since both already happened.
 - **Outcome is verified, not assumed.** A system install is triggered non-blocking, watched for a few minutes, and then listed as *pending verification*. On the next background scan the entity's `installed_version` is checked: a matching version becomes a success entry in history, an unchanged one becomes a failure (and counts toward auto-quarantine). Until then it is not reported as a success.
 - **Interrupted runs are reconstructed.** A run marker (`ha_auto_updater_run.json`) is written before each install. If HA restarts mid-run, the next startup writes a history entry from it (`Interrupted` status), verifies whatever was mid-install by entity state, and schedules the follow-up pass for anything not yet attempted.
@@ -186,6 +187,8 @@ On HA 2025.1+ the pre-update backup goes through the backup manager rather than 
 | Add-on or HACS update skipped | Category switch is OFF | Turn ON `switch.ha_auto_updater_auto_update_add_ons` or `switch.ha_auto_updater_auto_update_hacs_integrations` |
 | Failing update snoozed automatically | Auto-Quarantine triggered after 3 failures | Check update error; call `ha_auto_updater.clear_snooze` when resolved |
 | Status shows `Interrupted` | HA restarted mid-run (usually a Core/OS update) | Nothing to do — the partial run was reconstructed and a follow-up pass is scheduled |
+| Status shows `Aborted (Backup Timeout)` | The pre-update backup took longer than 30 minutes and may still be running | The run is skipped even without strict backup mode, so nothing installs mid-backup. Updates retry on the next run. |
+| Zigbee firmware never installs | Before 1.3.1, hex firmware versions such as `0x1b000045` were mistaken for betas | Fixed in 1.3.1 |
 | Core/OS update listed as "pending verification" | Result is confirmed on the next 30-minute scan | Wait for the next scan, or press **Scan for updates** |
 
 ---
