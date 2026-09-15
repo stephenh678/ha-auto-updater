@@ -48,6 +48,8 @@ async def async_get_config_entry_diagnostics(
             "snoozed": coordinator._snoozed,
             "snoozed_summary": coordinator.snoozed_summary(),
             "tracked_backups": coordinator._tracked_backups,
+            "pending_verification": coordinator._pending_verification,
+            "deferred": coordinator._deferred,
             "next_run": coordinator.next_run.isoformat() if coordinator.next_run else None,
         },
         "system_info": {

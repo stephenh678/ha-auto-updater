@@ -8,7 +8,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule — with backup protection, pre-flight disk space guards, granular category switches, auto-quarantine, custom event hooks, and full dashboard control.
 
-> **Version:** 1.2.5 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.3.0 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
@@ -17,9 +17,10 @@ A custom Home Assistant integration that automatically installs available update
 Home Assistant surfaces updates but won't install them for you. **HA Auto Updater** does — safely and on your terms:
 
 - **Pre-flight safety guards:** Verifies host disk space (`min_disk_space_gb`) and aborts if HA is in Safe Mode.
-- **Granular category control:** Toggle updates independently for Add-ons, HACS integrations, device firmware, and HA Core/OS.
+- **Granular category control:** Toggle updates independently for Add-ons, HACS integrations, device firmware (anything with `device_class: firmware`), and HA Core/OS.
 - **Backup before update:** Takes a full backup *right before* installing (only when there's actually something to install — never on a wasteful schedule).
 - **Auto-Quarantine:** Automatically snoozes components that fail 3 consecutive runs for 7 days to prevent repeated failure loops.
+- **Verified system updates:** Core/OS/Supervisor installs are confirmed by version on a later scan, never assumed. If HA restarts mid-run, the partial run is reconstructed and the rest of the queue resumes automatically.
 - **Major-version & Beta protection:** Skips major version bumps and beta/RC releases by default.
 - **Per-update snooze:** Lets you snooze a specific update for a few days when a release looks risky.
 - **Automations & Event hooks:** Fires rich events (`ha_auto_updater_start`, `_finished`, etc.) on `hass.bus` for Node-RED and custom automations.
@@ -40,6 +41,7 @@ Home Assistant surfaces updates but won't install them for you. **HA Auto Update
 - **Per-update snooze** — temporarily skip a specific update for N days via service call
 - **Event Bus hooks** — fires structured events on `hass.bus` for external automations
 - **Auto restart** — optionally restarts HA after installing updates that require it
+- **Interrupted-run recovery** — a run cut short by a Core/OS restart is written to history on startup and the remaining updates run in a follow-up pass
 - **Rich sensors** — pending count, failed count, last-run status/duration/count, next run, history, and binary sensor
 
 ---

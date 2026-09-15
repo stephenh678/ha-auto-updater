@@ -2,14 +2,14 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, pre-flight safety guards, auto-quarantine, event bus hooks, and full dashboard control.
 
-> **Version:** 1.2.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.3.0 | **Requires:** Home Assistant 2023.1 or newer
 
 ---
 
 ## Features
 
 - **Scheduled updates** — runs automatically at a configurable time each day; run time is editable directly from the device page
-- **Granular category switches** — toggle auto-updates independently for Add-ons, HACS integrations, device firmware (ESPHome/Z-Wave/Matter), and HA Core/OS/Supervisor
+- **Granular category switches** — toggle auto-updates independently for Add-ons, HACS integrations, device firmware (any update entity with `device_class: firmware` — Shelly, Tasmota, WLED, Zigbee2MQTT, ESPHome, Z-Wave JS, Matter, UniFi, …), and HA Core/OS/Supervisor
 - **Pre-flight disk space guard** — checks available storage (`min_disk_space_gb`) before backups or installs and aborts safely with a notification if free space is low
 - **Safe Mode guard** — automatically skips update runs if Home Assistant is running in Safe Mode
 - **Auto-Quarantine** — automatically snoozes components failing 3 consecutive runs for 7 days to prevent repeated installation loops
@@ -22,8 +22,9 @@ A custom Home Assistant integration that automatically installs available update
 - **Beta/RC skipping** — optionally skips pre-release versions
 - **Per-update snooze** — temporarily skip a specific update for a set number of days via service call
 - **Auto restart** — optionally restarts HA after installing updates that require it
+- **Interrupted-run recovery** — a run cut short by a Core/OS restart is written to history on startup and the remaining updates run in a follow-up pass
 - **Release notes links** — pending list and notifications link straight to each update's release notes when available
-- **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Partial failure`, `All failed`, `No updates`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted`, or `Never run`)
+- **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`)
 
 ---
 
@@ -83,7 +84,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `switch.ha_auto_updater_auto_updater` | Master on/off — enables or disables scheduled updates |
 | `switch.ha_auto_updater_auto_update_add_ons` | Include Home Assistant Add-ons in auto-updates |
 | `switch.ha_auto_updater_auto_update_hacs_integrations` | Include HACS custom components in auto-updates |
-| `switch.ha_auto_updater_auto_update_device_firmware` | Include ESPHome, Z-Wave JS, Matter firmware in auto-updates |
+| `switch.ha_auto_updater_auto_update_device_firmware` | Include device firmware (`device_class: firmware` update entities — Shelly, Tasmota, WLED, Zigbee2MQTT, ESPHome, Z-Wave JS, Matter, UniFi, …) in auto-updates |
 | `switch.ha_auto_updater_auto_update_core_os` | Include Home Assistant Core, OS, and Supervisor in auto-updates |
 | `switch.ha_auto_updater_auto_quarantine_failing_updates` | Auto-snooze entities failing 3 consecutive runs for 7 days |
 | `switch.ha_auto_updater_backup_before_updating` | Create a full backup before installing updates |
@@ -106,7 +107,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `sensor.ha_auto_updater_auto_updater_next_run` | Timestamp of the next scheduled run |
 | `sensor.ha_auto_updater_auto_updater_last_run_count` | Number of updates installed on last run |
 | `sensor.ha_auto_updater_auto_updater_last_run_duration` | Duration of last run in seconds |
-| `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Partial failure`, `All failed`, `No updates`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted`, or `Never run`. |
+| `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Cancelled)`, `Aborted`, or `Never run`. |
 | `sensor.ha_auto_updater_auto_updater_history` | Last 10 run logs in `recent_runs` attribute |
 
 ### Binary Sensors & Selects & Buttons
@@ -129,8 +130,8 @@ Auto Updater fires custom events on `hass.bus` throughout the update run lifecyc
 | `ha_auto_updater_start` | `available_count`, `titles` | Fired when an update run starts |
 | `ha_auto_updater_backup_start` | `{}` | Fired when backup process begins |
 | `ha_auto_updater_backup_complete` | `success` (`True`/`False`) | Fired when backup finishes |
-| `ha_auto_updater_item_complete` | `entity_id`, `title`, `success`, `from`, `to` | Fired after each individual item finishes installing |
-| `ha_auto_updater_finished` | `total_updated`, `total_failed`, `duration_seconds` | Fired when update run completes |
+| `ha_auto_updater_item_complete` | `entity_id`, `title`, `success`, `pending_verification`, `from`, `to` | Fired after each individual item finishes installing. `pending_verification` is `True` for a Core/OS/Supervisor install that was triggered but whose result is confirmed on a later scan. |
+| `ha_auto_updater_finished` | `total_updated`, `total_failed`, `total_pending_verification`, `total_deferred`, `duration_seconds` | Fired when update run completes |
 
 ### Event Bus Automation Example
 ```yaml
@@ -159,6 +160,23 @@ action:
 
 ---
 
+## System Updates, Interrupted Runs & Verification
+
+Core, OS and Supervisor updates restart Home Assistant (or the host) part-way through installing, so they are handled differently from add-ons, HACS and firmware:
+
+- **Installed last, one per run.** System updates are sorted to the end of the queue. As soon as one is triggered, the remaining updates are **deferred** and a follow-up pass runs automatically about 10 minutes later (or 10 minutes after HA comes back up). The follow-up pass skips the backup and the pre-update notice, since both already happened.
+- **Outcome is verified, not assumed.** A system install is triggered non-blocking, watched for a few minutes, and then listed as *pending verification*. On the next background scan the entity's `installed_version` is checked: a matching version becomes a success entry in history, an unchanged one becomes a failure (and counts toward auto-quarantine). Until then it is not reported as a success.
+- **Interrupted runs are reconstructed.** A run marker (`ha_auto_updater_run.json`) is written before each install. If HA restarts mid-run, the next startup writes a history entry from it (`Interrupted` status), verifies whatever was mid-install by entity state, and schedules the follow-up pass for anything not yet attempted.
+- **Reloading the integration cancels a run cleanly.** A run waiting in the pre-update delay, a stagger delay or a retry wait is cancelled on unload and its partial results are saved (`Aborted (Cancelled)`).
+
+History entries record both titles (for display) and entity ids (`updated_entities`, `failed_entities`), so auto-quarantine keys on the entity rather than the title. Two devices that share a title no longer share a failure count.
+
+### Backups on Home Assistant 2025.1 and newer
+
+On HA 2025.1+ the pre-update backup goes through the backup manager rather than the `backup.create` service. That lets the integration name the backup (`pre_update_YYYYMMDD_HHMM`), learn its id, and delete it later when **Auto-purge old backups** is on. On HA OS / Supervised the backup includes all add-ons; on Container it covers Home Assistant and its database. The backup is stored on the local backup agent only. Older HA versions fall back to `backup.create` / `hassio.backup_full` as before.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -167,6 +185,8 @@ action:
 | Run aborted with Safe Mode warning | Home Assistant is running in Safe Mode | Resolve safe mode issues and restart HA |
 | Add-on or HACS update skipped | Category switch is OFF | Turn ON `switch.ha_auto_updater_auto_update_add_ons` or `switch.ha_auto_updater_auto_update_hacs_integrations` |
 | Failing update snoozed automatically | Auto-Quarantine triggered after 3 failures | Check update error; call `ha_auto_updater.clear_snooze` when resolved |
+| Status shows `Interrupted` | HA restarted mid-run (usually a Core/OS update) | Nothing to do — the partial run was reconstructed and a follow-up pass is scheduled |
+| Core/OS update listed as "pending verification" | Result is confirmed on the next 30-minute scan | Wait for the next scan, or press **Scan for updates** |
 
 ---
 
@@ -175,6 +195,20 @@ action:
 HA Auto Updater supports Home Assistant's native Diagnostics platform. You can download a full, sanitized diagnostic JSON payload containing config entry options, current coordinator status, disk space metrics, and recent history logs directly from:
 
 **Settings → Devices & Services → HA Auto Updater → Download Diagnostics**
+
+---
+
+## State Files
+
+The integration keeps its own state in small JSON files in the Home Assistant config directory. They are safe to delete while the integration is unloaded; deleting them only resets the listed data.
+
+| File | Contents |
+|------|----------|
+| `ha_auto_updater_history.json` | Last 50 runs (feeds the history sensor, weekly digest and failure counting) |
+| `ha_auto_updater_run.json` | Run currently in progress, system updates awaiting verification, and updates deferred to the follow-up pass. Removed automatically when nothing is outstanding. |
+| `ha_auto_updater_snooze.json` | Per-entity snooze expiry timestamps (manual snoozes and auto-quarantine) |
+| `ha_auto_updater_backups.json` | Pre-update backups the integration created, for auto-purge |
+| `ha_auto_updater_digest.json` | When the last weekly digest was sent |
 
 ---
 

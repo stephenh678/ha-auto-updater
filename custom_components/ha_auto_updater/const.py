@@ -146,3 +146,32 @@ DIGEST_STATE_FILE = "ha_auto_updater_digest.json"
 BACKUP_STATE_FILE = "ha_auto_updater_backups.json"
 # Tracks per-entity snooze expiry timestamps
 SNOOZE_STATE_FILE = "ha_auto_updater_snooze.json"
+# Tracks the run currently in progress so an interrupted run (HA restarted by
+# a Core/OS update, crash, integration reload) can be reconstructed on startup
+RUN_STATE_FILE = "ha_auto_updater_run.json"
+
+# ---------------------------------------------------------------------------
+# System-update handling
+# ---------------------------------------------------------------------------
+# Seconds to watch a non-blocking Core/OS/Supervisor install before deciding
+# whether it started, finished, or was rejected.
+SYSTEM_UPDATE_WATCH_SECONDS = 180
+SYSTEM_UPDATE_POLL_SECONDS = 5
+# Minutes after startup to run a follow-up pass when the previous run was cut
+# short by a system update restart and still had updates queued.
+RESUME_RUN_DELAY_MINUTES = 10
+
+# Seconds to allow a pre-update backup to complete
+BACKUP_TIMEOUT_SECONDS = 1800
+
+# Update entity device_class value that identifies firmware updates
+FIRMWARE_DEVICE_CLASS = "firmware"
+# Platforms that expose device firmware updates without always setting
+# device_class (kept as a fallback for the Firmware category)
+FIRMWARE_PLATFORMS = {
+    "esphome", "zwave_js", "matter", "bluetooth", "shelly", "tasmota", "wled",
+    "unifi", "unifiprotect", "zha", "tuya", "homewizard", "roborock", "reolink",
+    "ring", "fritz", "tplink", "synology_dsm", "nanoleaf", "wiz", "yeelight",
+    "devolo_home_network", "sonos", "philips_js", "lametric", "ruckus_unleashed",
+    "airgradient", "dormakaba_dkey", "nut", "fronius", "enphase_envoy",
+}
