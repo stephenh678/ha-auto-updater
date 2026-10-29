@@ -8,7 +8,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule — with backup protection, pre-flight disk space guards, granular category switches, auto-quarantine, custom event hooks, and full dashboard control.
 
-> **Version:** 1.4.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.5.0 | **Requires:** Home Assistant 2024.11 or newer
 
 ---
 
@@ -47,6 +47,9 @@ Home Assistant surfaces updates but won't install them for you. **HA Auto Update
 - **Blocking entities** — skip automatic runs while guest, vacation or party mode (or any on/off entity) is on
 - **Preview next run** — a button and a `dry_run` service that show what would install and why anything is skipped
 - **Notification buttons** — Install now, Skip this run or Snooze from the pre-update notification on your phone
+- **Health check after update** — after an add-on or device update, checks the other entities on that device came back and warns you if not
+- **Skip a version** — leave one bad release alone with `skip_version`; the next version installs as normal
+- **Quiet hours** — no automatic runs between two times you choose, even across midnight
 - **Repairs integration** — quarantined updates and repeatedly failing backups appear under Settings → System → Repairs
 - **Rich sensors** — pending count, failed count, last-run status/duration/count, next run, history, and binary sensor
 

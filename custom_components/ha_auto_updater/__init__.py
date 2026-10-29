@@ -15,10 +15,12 @@ from .const import (
     DEFAULT_SNOOZE_DAYS,
     DOMAIN,
     PLATFORMS,
+    SERVICE_CLEAR_SKIPPED,
     SERVICE_CLEAR_SNOOZE,
     SERVICE_DRY_RUN,
     SERVICE_INSTALL_SINGLE,
     SERVICE_RUN_UPDATES,
+    SERVICE_SKIP_VERSION,
     SERVICE_SNOOZE_UPDATE,
 )
 from .coordinator import AutoUpdaterCoordinator
@@ -76,6 +78,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def _handle_clear_snooze(call: ServiceCall) -> None:
         await coordinator.async_clear_snooze(call.data.get("entity_id"))
 
+    async def _handle_skip_version(call: ServiceCall) -> None:
+        await coordinator.async_skip_version(call.data["entity_id"])
+
+    async def _handle_clear_skipped(call: ServiceCall) -> None:
+        await coordinator.async_clear_skipped_version(call.data.get("entity_id"))
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_UPDATES,
@@ -94,14 +102,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_INSTALL_SINGLE,
         _handle_install_single,
-        schema=vol.Schema({vol.Required("entity_id"): cv.entity_id}),
+        schema=vol.Schema({vol.Required("entity_id"): cv.entity_domain("update")}),
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_SNOOZE_UPDATE,
         _handle_snooze_update,
         schema=vol.Schema({
-            vol.Required("entity_id"): cv.entity_id,
+            vol.Required("entity_id"): cv.entity_domain("update"),
             vol.Optional("days", default=DEFAULT_SNOOZE_DAYS): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=365)
             ),
@@ -111,7 +119,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_CLEAR_SNOOZE,
         _handle_clear_snooze,
-        schema=vol.Schema({vol.Optional("entity_id"): cv.entity_id}),
+        schema=vol.Schema({vol.Optional("entity_id"): cv.entity_domain("update")}),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SKIP_VERSION,
+        _handle_skip_version,
+        schema=vol.Schema({vol.Required("entity_id"): cv.entity_domain("update")}),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_SKIPPED,
+        _handle_clear_skipped,
+        schema=vol.Schema({vol.Optional("entity_id"): cv.entity_domain("update")}),
     )
 
     def _remove_services() -> None:
@@ -120,6 +140,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.services.async_remove(DOMAIN, SERVICE_INSTALL_SINGLE)
         hass.services.async_remove(DOMAIN, SERVICE_SNOOZE_UPDATE)
         hass.services.async_remove(DOMAIN, SERVICE_CLEAR_SNOOZE)
+        hass.services.async_remove(DOMAIN, SERVICE_SKIP_VERSION)
+        hass.services.async_remove(DOMAIN, SERVICE_CLEAR_SKIPPED)
 
     entry.async_on_unload(_remove_services)
 
@@ -128,10 +150,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator: AutoUpdaterCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
-    await coordinator.async_unload()
 
+    # Platforms first: if they refuse to unload, the entry stays loaded and
+    # its coordinator must keep its timers.
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
+        await coordinator.async_unload()
         hass.data[DOMAIN].pop(entry.entry_id)
 
     return unloaded
@@ -145,5 +169,10 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
     """
     coordinator: AutoUpdaterCoordinator = hass.data[DOMAIN][entry.entry_id][DATA_COORDINATOR]
     coordinator._apply_log_level()
+    if coordinator.enabled and coordinator.unloaded:
+        # Turned back on from the Configure dialog after the master switch had
+        # unloaded the scheduler: restore the timer, scans and notification buttons.
+        await coordinator.async_setup()
+        return
     await coordinator._async_reschedule()
     await coordinator._async_scan_pending(None)

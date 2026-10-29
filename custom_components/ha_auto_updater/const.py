@@ -1,5 +1,5 @@
 DOMAIN = "ha_auto_updater"
-PLATFORMS = ["sensor", "binary_sensor", "switch", "button", "select"]
+PLATFORMS = ["sensor", "binary_sensor", "switch", "button", "select", "number"]
 
 # ---------------------------------------------------------------------------
 # Config / options keys
@@ -157,6 +157,14 @@ RUN_STATE_FILE = "ha_auto_updater_run.json"
 # whether it started, finished, or was rejected.
 SYSTEM_UPDATE_WATCH_SECONDS = 180
 SYSTEM_UPDATE_POLL_SECONDS = 5
+# Seconds to wait for an install to finish when its service call timed out or
+# failed but the entity still reports it in progress, before trying again.
+INSTALL_SETTLE_SECONDS = 1800
+# Seconds after a manual system-update trigger during which the scan that runs
+# straight afterwards won't call it failed just because nothing is in progress yet.
+VERIFY_GRACE_SECONDS = 600
+# Days to keep looking for a pre-update backup that finished after the wait gave up.
+UNRECORDED_BACKUP_DAYS = 2
 # Minutes after startup to run a follow-up pass when the previous run was cut
 # short by a system update restart and still had updates queued.
 RESUME_RUN_DELAY_MINUTES = 10
@@ -182,6 +190,7 @@ FIRMWARE_PLATFORMS = {
 # Release cooldown: only install a version once it has been available this long
 CONF_MIN_RELEASE_AGE_DAYS = "min_release_age_days"
 DEFAULT_MIN_RELEASE_AGE_DAYS = 0          # 0 = install as soon as a version appears
+MAX_RELEASE_AGE_DAYS = 60
 
 # Automatic (scheduled / follow-up) runs are skipped while any of these is on
 CONF_BLOCKING_ENTITIES = "blocking_entities"
@@ -203,6 +212,22 @@ SERVICE_DRY_RUN = "dry_run"
 
 # When each pending version was first seen, for the release cooldown
 SEEN_STATE_FILE = "ha_auto_updater_seen.json"
+
+# Health check after an install: is the add-on / device still working?
+CONF_HEALTH_CHECK = "health_check"
+DEFAULT_HEALTH_CHECK = True
+HEALTH_SETTLE_SECONDS = 30      # let the add-on or device restart before looking
+HEALTH_CHECK_SECONDS = 180      # keep looking this long before calling it unhealthy
+HEALTH_POLL_SECONDS = 10
+
+# Quiet hours: no automatic runs between these times (both empty = off)
+CONF_QUIET_START = "quiet_start"
+CONF_QUIET_END = "quiet_end"
+
+# Skip one specific version of an update (a newer version is offered as normal)
+SERVICE_SKIP_VERSION = "skip_version"
+SERVICE_CLEAR_SKIPPED = "clear_skipped_version"
+SKIPPED_STATE_FILE = "ha_auto_updater_skipped.json"
 
 # Repairs issues
 ISSUE_QUARANTINED_PREFIX = "quarantined_"

@@ -35,7 +35,8 @@ async def async_get_config_entry_diagnostics(
         "domain": DOMAIN,
         "version": entry.version,
         "integration_version": coordinator.version,
-        "options": dict(entry.options),
+        # Merged view, as the coordinator sees it (setup values live in entry.data)
+        "options": dict(coordinator.options),
         "coordinator_state": {
             "is_running": coordinator._is_running,
             "last_run": coordinator.last_run.isoformat() if coordinator.last_run else None,

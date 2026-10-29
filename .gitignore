@@ -18,3 +18,6 @@ ha_auto_updater_history.json
 ha_auto_updater_digest.json
 ha_auto_updater_backups.json
 ha_auto_updater_snooze.json
+ha_auto_updater_run.json
+ha_auto_updater_seen.json
+ha_auto_updater_skipped.json

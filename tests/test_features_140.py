@@ -481,6 +481,42 @@ class TestRepairFlow(unittest.TestCase):
         self.assertIsInstance(flow, ConfirmRepairFlow)
 
 
+@unittest.skipUnless(HA_INSTALLED, "needs the real homeassistant package")
+class TestReleaseCooldownNumber(unittest.TestCase):
+
+    def test_reads_and_writes_the_option(self):
+        from custom_components.ha_auto_updater.number import ReleaseCooldownNumber
+
+        coord, hass = _make_coord({CONF_MIN_RELEASE_AGE_DAYS: 3, "other_option": True})
+        coord.entry.entry_id = "abc"
+        entity = ReleaseCooldownNumber(coord, coord.entry)
+        entity.hass = hass
+        entity.async_write_ha_state = MagicMock()
+
+        self.assertEqual(entity.unique_id, "abc_release_cooldown")
+        self.assertEqual(entity.native_value, 3.0)
+        self.assertEqual((entity.native_min_value, entity.native_max_value), (0, 60))
+
+        asyncio.run(entity.async_set_native_value(7.0))
+        hass.config_entries.async_update_entry.assert_called_once_with(
+            coord.entry, options={CONF_MIN_RELEASE_AGE_DAYS: 7, "other_option": True}
+        )
+        entity.async_write_ha_state.assert_called_once()
+
+    def test_value_from_initial_setup_data(self):
+        # Settings chosen during setup live in entry.data until options are saved.
+        from custom_components.ha_auto_updater.number import ReleaseCooldownNumber
+
+        coord, _ = _make_coord()
+        coord.entry.data = {CONF_MIN_RELEASE_AGE_DAYS: 5}
+        self.assertEqual(ReleaseCooldownNumber(coord, coord.entry).native_value, 5.0)
+
+    def test_number_platform_is_registered(self):
+        from custom_components.ha_auto_updater.const import PLATFORMS
+
+        self.assertIn("number", PLATFORMS)
+
+
 class TestConfigFlowOptions(unittest.TestCase):
 
     def test_schema_has_new_options(self):

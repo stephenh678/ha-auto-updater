@@ -64,3 +64,29 @@ clear_snooze:
       selector:
         entity:
           domain: update
+
+skip_version:
+  name: Skip Version
+  description: Leave the version an update entity offers right now alone. A newer version is installed as normal.
+  fields:
+    entity_id:
+      name: Update entity
+      description: The update.* entity whose current version to skip.
+      required: true
+      example: update.home_assistant_core_update
+      selector:
+        entity:
+          domain: update
+
+clear_skipped_version:
+  name: Clear Skipped Version
+  description: Stop skipping the version of one update entity, or of all of them if none is given.
+  fields:
+    entity_id:
+      name: Update entity
+      description: The update.* entity to stop skipping. Leave empty to clear every skipped version.
+      required: false
+      example: update.home_assistant_core_update
+      selector:
+        entity:
+          domain: update

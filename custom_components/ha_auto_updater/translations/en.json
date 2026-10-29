@@ -22,7 +22,9 @@
           "notify_on_new_updates": "Notify when new updates are detected",
           "excluded_entities": "Exclude these items from auto-update",
           "min_release_age_days": "Only install versions older than",
-          "blocking_entities": "Skip automatic runs while any of these is on"
+          "blocking_entities": "Skip automatic runs while any of these is on",
+          "quiet_start": "Quiet hours start",
+          "quiet_end": "Quiet hours end"
         },
         "data_description": {
           "frequency": "How often Auto Updater looks for and installs updates. Hourly runs at the top of every hour and ignores the time and day below; Daily runs once a day at the time below; Weekly runs once a week on the day and time below. (A background scan also refreshes the pending count every 30 minutes, but never installs.)",
@@ -38,7 +40,9 @@
           "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
           "notify_on_new_updates": "Requires a notify service above.",
           "min_release_age_days": "Release cooldown. A new version is held back until it has been available this many days, so early bugs have time to surface and a hotfix to land. Counted from when Auto Updater first saw the version. 0 = install as soon as it appears. Install Single Update ignores this.",
-          "blocking_entities": "For example a guests, vacation or party-mode toggle. Scheduled runs and follow-up passes are skipped while any selected entity is on. Run Updates Now and Install Single Update still work."
+          "blocking_entities": "For example a guests, vacation or party-mode toggle. Scheduled runs and follow-up passes are skipped while any selected entity is on. Run Updates Now and Install Single Update still work.",
+          "quiet_start": "Automatic runs are skipped from this time until the end time, even across midnight. Leave both empty for no quiet hours. Set the run time above outside this window, or a daily or weekly run will be skipped until the next day or week.",
+          "quiet_end": "When quiet hours finish. Run Updates Now and Install Single Update ignore quiet hours."
         }
       }
     },
@@ -69,7 +73,9 @@
           "notify_on_new_updates": "Notify when new updates are detected",
           "excluded_entities": "Exclude these items from auto-update",
           "min_release_age_days": "Only install versions older than",
-          "blocking_entities": "Skip automatic runs while any of these is on"
+          "blocking_entities": "Skip automatic runs while any of these is on",
+          "quiet_start": "Quiet hours start",
+          "quiet_end": "Quiet hours end"
         },
         "data_description": {
           "frequency": "How often Auto Updater looks for and installs updates. Hourly runs at the top of every hour and ignores the time and day below; Daily runs once a day at the time below; Weekly runs once a week on the day and time below. (A background scan also refreshes the pending count every 30 minutes, but never installs.)",
@@ -85,7 +91,9 @@
           "notify_service": "Optional. e.g. notify.mobile_app_my_phone — forwards alerts to your phone.",
           "notify_on_new_updates": "Requires a notify service above.",
           "min_release_age_days": "Release cooldown. A new version is held back until it has been available this many days, so early bugs have time to surface and a hotfix to land. Counted from when Auto Updater first saw the version. 0 = install as soon as it appears. Install Single Update ignores this.",
-          "blocking_entities": "For example a guests, vacation or party-mode toggle. Scheduled runs and follow-up passes are skipped while any selected entity is on. Run Updates Now and Install Single Update still work."
+          "blocking_entities": "For example a guests, vacation or party-mode toggle. Scheduled runs and follow-up passes are skipped while any selected entity is on. Run Updates Now and Install Single Update still work.",
+          "quiet_start": "Automatic runs are skipped from this time until the end time, even across midnight. Leave both empty for no quiet hours. Set the run time above outside this window, or a daily or weekly run will be skipped until the next day or week.",
+          "quiet_end": "When quiet hours finish. Run Updates Now and Install Single Update ignore quiet hours."
         }
       }
     }

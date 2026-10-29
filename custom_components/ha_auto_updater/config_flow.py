@@ -17,9 +17,12 @@ from homeassistant.helpers.selector import (
 from .const import (
     BLOCKING_ENTITY_DOMAINS,
     CONF_BLOCKING_ENTITIES,
+    CONF_QUIET_END,
+    CONF_QUIET_START,
     CONF_MIN_RELEASE_AGE_DAYS,
     DEFAULT_BLOCKING_ENTITIES,
     DEFAULT_MIN_RELEASE_AGE_DAYS,
+    MAX_RELEASE_AGE_DAYS,
     CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_BACKUP_KEEP_DAYS,
     CONF_DAY_OF_WEEK,
@@ -57,7 +60,25 @@ from .const import (
 )
 
 
+def _update_entity_map(hass) -> dict:
+    """Update entities offered for exclusion, labelled with their title when they have one."""
+    return {
+        e.entity_id: e.attributes.get("title") or e.entity_id
+        for e in hass.states.async_all("update")
+    }
+
+
 def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
+    # An excluded entity that no longer exists must stay selectable: multi_select
+    # rejects ids outside its options, so the saved list could never be submitted.
+    update_entity_map = {
+        **{
+            eid: eid
+            for eid in options.get(CONF_EXCLUDED_ENTITIES, [])
+            if eid not in update_entity_map
+        },
+        **update_entity_map,
+    }
     return vol.Schema(
         {
             vol.Required(
@@ -119,7 +140,7 @@ def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
                 default=options.get(CONF_MIN_RELEASE_AGE_DAYS, DEFAULT_MIN_RELEASE_AGE_DAYS),
             ): NumberSelector(
                 NumberSelectorConfig(
-                    min=0, max=60, step=1,
+                    min=0, max=MAX_RELEASE_AGE_DAYS, step=1,
                     unit_of_measurement="days",
                     mode=NumberSelectorMode.BOX,
                 )
@@ -154,6 +175,15 @@ def _build_schema(options: dict, update_entity_map: dict) -> vol.Schema:
                     mode=NumberSelectorMode.BOX,
                 )
             ),
+            # suggested_value so a cleared time really clears (empty = quiet hours off)
+            vol.Optional(
+                CONF_QUIET_START,
+                description={"suggested_value": options.get(CONF_QUIET_START) or None},
+            ): TimeSelector(),
+            vol.Optional(
+                CONF_QUIET_END,
+                description={"suggested_value": options.get(CONF_QUIET_END) or None},
+            ): TimeSelector(),
             vol.Optional(
                 CONF_NOTIFY_SERVICE,
                 default=options.get(CONF_NOTIFY_SERVICE, DEFAULT_NOTIFY_SERVICE),
@@ -198,14 +228,8 @@ class AutoUpdaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=_build_schema({}, self._get_update_entity_map()),
+            data_schema=_build_schema({}, _update_entity_map(self.hass)),
         )
-
-    def _get_update_entity_map(self) -> dict:
-        return {
-            e.entity_id: e.attributes.get("title", e.entity_id)
-            for e in self.hass.states.async_all("update")
-        }
 
     @staticmethod
     @callback
@@ -221,16 +245,10 @@ class AutoUpdaterOptionsFlow(config_entries.OptionsFlow):
 
         if user_input is not None:
             # An emptied entity selector is left out of the submitted form.
-            user_input = {CONF_BLOCKING_ENTITIES: [], **user_input}
+            user_input = {CONF_BLOCKING_ENTITIES: [], CONF_QUIET_START: "", CONF_QUIET_END: "", **user_input}
             return self.async_create_entry(title="", data={**current, **user_input})
 
         return self.async_show_form(
             step_id="init",
-            data_schema=_build_schema(current, self._get_update_entity_map()),
+            data_schema=_build_schema(current, _update_entity_map(self.hass)),
         )
-
-    def _get_update_entity_map(self) -> dict:
-        return {
-            e.entity_id: e.attributes.get("title", e.entity_id)
-            for e in self.hass.states.async_all("update")
-        }

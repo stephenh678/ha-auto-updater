@@ -2,7 +2,7 @@
 
 A custom Home Assistant integration that automatically installs available updates on a schedule, with notifications, backup protection, pre-flight safety guards, auto-quarantine, event bus hooks, and full dashboard control.
 
-> **Version:** 1.4.0 | **Requires:** Home Assistant 2023.1 or newer
+> **Version:** 1.5.0 | **Requires:** Home Assistant 2024.11 or newer
 
 ---
 
@@ -27,6 +27,9 @@ A custom Home Assistant integration that automatically installs available update
 - **Blocking entities** — skip automatic runs while guest, vacation or party mode (or any on/off entity) is on
 - **Preview next run** — a button and a `dry_run` service that show what would install and why anything is skipped
 - **Notification buttons** — Install now, Skip this run or Snooze from the pre-update notification on your phone
+- **Health check after update** — after an add-on or device update, checks the other entities on that device came back and warns you if not
+- **Skip a version** — leave one bad release alone with `skip_version`; the next version installs as normal
+- **Quiet hours** — no automatic runs between two times you choose, even across midnight
 - **Repairs integration** — quarantined updates and repeatedly failing backups appear under Settings → System → Repairs
 - **Release notes links** — pending list and notifications link straight to each update's release notes when available
 - **Run history & status sensor** — stores recent runs and updates dedicated text sensor (`Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Skipped (Blocked)`, `Skipped (from notification)`, `Snoozed (from notification)`, `Aborted`, or `Never run`)
@@ -37,7 +40,7 @@ A custom Home Assistant integration that automatically installs available update
 
 | Requirement | Details |
 |-------------|---------|
-| Home Assistant | 2023.1 or newer |
+| Home Assistant | 2024.11 or newer |
 | Installation method | HACS or Manual (custom component) |
 | HACS | Compatible, optional |
 | External dependencies | `awesomeversion` (built into Home Assistant) |
@@ -77,7 +80,8 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | Notify service | _(none)_ | Optional `domain.service` to forward notifications to (e.g. `notify.mobile_app_my_phone`). |
 | Max updates per run | `0` | Cap on updates per run (`0` = unlimited). |
 | Weekly digest | Off | Send a weekly summary of update activity every 7 days. |
-| Only install versions older than | `0` days | Release cooldown: hold back each new version until it has been available this many days (`0` = off). |
+| Only install versions older than | `0` days | Release cooldown: hold back each new version until it has been available this many days (`0` = off). Also editable on the device page as **Release cooldown**. |
+| Quiet hours start / end | _(off)_ | No automatic runs between these times, even across midnight. |
 | Skip automatic runs while any of these is on | _(none)_ | Blocking entities: scheduled runs and follow-up passes are skipped while any of them is on. |
 
 ---
@@ -94,6 +98,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `switch.ha_auto_updater_auto_update_device_firmware` | Include device firmware (`device_class: firmware` update entities — Shelly, Tasmota, WLED, Zigbee2MQTT, ESPHome, Z-Wave JS, Matter, UniFi, …) in auto-updates |
 | `switch.ha_auto_updater_auto_update_core_os` | Include Home Assistant Core, OS, and Supervisor in auto-updates |
 | `switch.ha_auto_updater_auto_quarantine_failing_updates` | Auto-snooze entities failing 3 consecutive runs for 7 days |
+| `switch.ha_auto_updater_health_check_after_update` | Check the add-on or device recovered after each update (on by default) |
 | `switch.ha_auto_updater_backup_before_updating` | Create a full backup before installing updates |
 | `switch.ha_auto_updater_auto_purge_old_backups` | Auto-delete pre-update backups created past retention period |
 | `switch.ha_auto_updater_restart_after_updates` | Restart HA after installing HACS updates (add-on, firmware and Core/OS/Supervisor updates never trigger a restart) |
@@ -118,7 +123,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `sensor.ha_auto_updater_auto_updater_last_run_status` | Status: `Running`, `Success`, `Success (deferred)`, `Partial failure`, `All failed`, `No updates`, `Interrupted`, `Aborted (Low Storage)`, `Aborted (Safe Mode)`, `Aborted (Backup Failed)`, `Aborted (Backup Timeout)`, `Aborted (Cancelled)`, `Skipped (Blocked)`, `Skipped (from notification)`, `Snoozed (from notification)`, `Aborted`, or `Never run`. |
 | `sensor.ha_auto_updater_auto_updater_history` | Last 10 run logs in `recent_runs` attribute |
 
-### Binary Sensors & Selects & Buttons
+### Binary Sensors, Selects, Numbers & Buttons
 
 | Entity ID | Type | Description |
 |-----------|------|-------------|
@@ -126,6 +131,7 @@ All options can be changed anytime via **Settings → Devices & Services → HA 
 | `select.ha_auto_updater_run_time` | Select | Pick scheduled run time (12:00 AM – 11:00 PM) |
 | `button.ha_auto_updater_run_updates_now` | Button | Immediately execute update process |
 | `button.ha_auto_updater_scan_for_updates` | Button | Refresh pending list without installing |
+| `number.ha_auto_updater_release_cooldown` | Number | Release cooldown in days (`0`–`60`, `0` = off); same setting as *Only install versions older than* |
 | `button.ha_auto_updater_preview_next_run` | Button | Show what a run would install and skip, without installing anything |
 
 ---
@@ -168,6 +174,8 @@ action:
 | `ha_auto_updater.dry_run` | _(none)_ | Preview what a run would do; returns the report as response data, or shows a notification |
 | `ha_auto_updater.snooze_update` | `entity_id` (req), `days` (opt, default 7) | Temporarily skip an update entity |
 | `ha_auto_updater.clear_snooze` | `entity_id` (opt) | Clear snooze for one entity or all snoozes |
+| `ha_auto_updater.skip_version` | `entity_id` (req) | Skip the version this update offers now; a newer version installs as normal |
+| `ha_auto_updater.clear_skipped_version` | `entity_id` (opt) | Stop skipping one entity's version, or all of them |
 
 ---
 
@@ -175,7 +183,7 @@ action:
 
 ### Release cooldown
 
-Set **Only install versions older than** to hold back each new version until it has been available that many days. Most broken releases get a hotfix within a few days, so a short cooldown avoids installing them.
+Set **Release cooldown** on the device page, or **Only install versions older than** under **Configure**, to hold back each new version until it has been available that many days. Both edit the same setting. Most broken releases get a hotfix within a few days, so a short cooldown avoids installing them.
 
 - Update entities don't report release dates, so the cooldown counts from when Auto Updater first saw the version. Tracking always runs, even with the cooldown at `0`, so turning it on later uses real dates.
 - A newer version replaces the one being held back and starts its own cooldown.
@@ -189,6 +197,24 @@ Pick entities under **Skip automatic runs while any of these is on**: a guests, 
 - Scheduled runs and follow-up passes are skipped while any selected entity is on. The status becomes `Skipped (Blocked)` and a notification names the entity.
 - The check repeats right before installs start, so turning a blocker on during the heads-up delay still stops the run.
 - **Run updates now**, **Install Single Update** and `run_updates` ignore blockers. Call `run_updates` with `respect_blocking_entities: true` from an automation that should honour them.
+
+### Quiet hours
+
+Set **Quiet hours start** and **Quiet hours end** in the settings to stop automatic runs during that window, for example 18:00 to 23:00. A window can cross midnight. Leave both empty for no quiet hours.
+
+- Scheduled runs and follow-up passes inside the window are skipped with status `Skipped (Quiet hours)`, and tried again on the next run.
+- Set the daily or weekly run time outside the window, otherwise that run is skipped until the next day or week.
+- **Run updates now**, **Install Single Update** and `run_updates` ignore quiet hours, like blocking entities. The dry run lists quiet hours as a blocker.
+
+### Skip a version
+
+Call `ha_auto_updater.skip_version` for an update entity to leave the version it offers right now alone. When a newer version appears the skip ends by itself and the new version installs as normal. `ha_auto_updater.clear_skipped_version` ends it early. Unlike a snooze it has no timer, so a bad release stays skipped however long the fix takes.
+
+### Health check after update
+
+After an add-on or device update installs, Auto Updater waits 30 seconds, then looks at the other entities on the same device. If one that was working before is now unavailable, or an add-on's *Running* sensor went from on to off, and it has not recovered after about three more minutes, you get a notification (and a phone push if a notify service is set) saying which entity failed. The update still counts as installed. Turn the check off with the **Health Check After Update** switch.
+
+Not checked: Core, OS and Supervisor updates (they restart HA), updates that need an HA restart to take effect, and devices with no other entities.
 
 ### Preview next run
 
@@ -236,7 +262,7 @@ History entries record both titles (for display) and entity ids (`updated_entiti
 
 ### Backups on Home Assistant 2025.1 and newer
 
-On HA 2025.1+ the pre-update backup goes through the backup manager rather than the `backup.create` service. That lets the integration name the backup (`pre_update_YYYYMMDD_HHMM`), learn its id, and delete it later when **Auto-purge old backups** is on. On HA OS / Supervised the backup includes all add-ons; on Container it covers Home Assistant and its database. The backup is stored on the local backup agent only. Older HA versions fall back to `backup.create` / `hassio.backup_full` as before.
+On HA 2025.1+ the pre-update backup goes through the backup manager rather than the `backup.create` service. That lets the integration name the backup (`pre_update_YYYYMMDD_HHMM`), learn its id, and delete it later when **Auto-purge old backups** is on. On HA OS / Supervised the backup includes all add-ons; on Container it covers Home Assistant and its database. The backup is stored on the local backup agent only (`hassio.local` on HA OS / Supervised, never your network storage locations or cloud). If another backup (for example your automatic backup) is running, Auto Updater waits for it to finish first. Older HA versions fall back to `backup.create` / `hassio.backup_full` as before.
 
 ---
 
@@ -272,10 +298,11 @@ The integration keeps its own state in small JSON files in the Home Assistant co
 
 | File | Contents |
 |------|----------|
-| `ha_auto_updater_history.json` | Last 50 runs (feeds the history sensor, weekly digest and failure counting) |
+| `ha_auto_updater_history.json` | Last 50 entries (feeds the history sensor, weekly digest and failure counting). Consecutive runs that found nothing share one entry, so hourly runs do not push out real ones |
 | `ha_auto_updater_run.json` | Run currently in progress, system updates awaiting verification, and updates deferred to the follow-up pass. Removed automatically when nothing is outstanding. |
 | `ha_auto_updater_snooze.json` | Per-entity snooze expiry timestamps (manual snoozes and auto-quarantine) |
-| `ha_auto_updater_backups.json` | Pre-update backups the integration created, for auto-purge, and the count of consecutive backup failures |
+| `ha_auto_updater_backups.json` | Pre-update backups the integration created, for auto-purge, backups that finished after a run stopped waiting for them, and the count of consecutive backup failures |
+| `ha_auto_updater_skipped.json` | Versions you skipped with `skip_version` |
 | `ha_auto_updater_seen.json` | When each pending version was first seen, for the release cooldown |
 | `ha_auto_updater_digest.json` | When the last weekly digest was sent |
 
@@ -295,6 +322,8 @@ custom_components/ha_auto_updater/
 ├── binary_sensor.py     # Updates-available binary sensor
 ├── switch.py            # Switch (control & CONFIG) entities
 ├── select.py            # Select (dropdown) entities
+├── number.py            # Number entities (release cooldown)
+├── repairs.py           # Repairs fix flows
 ├── button.py            # Button entities
 ├── services.yaml        # Service definitions
 ├── strings.json         # UI strings

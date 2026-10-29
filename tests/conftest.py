@@ -53,6 +53,7 @@ except ImportError:
     sys.modules["homeassistant.components.switch"] = MagicMock()
     sys.modules["homeassistant.components.button"] = MagicMock()
     sys.modules["homeassistant.components.select"] = MagicMock()
+    sys.modules["homeassistant.components.number"] = MagicMock()
     class _DummySelector:
         def __init__(self, *args, **kwargs):
             pass

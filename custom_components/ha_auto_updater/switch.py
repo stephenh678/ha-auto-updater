@@ -10,6 +10,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_ACTIONABLE_NOTIFICATIONS,
+    CONF_HEALTH_CHECK,
+    DEFAULT_HEALTH_CHECK,
     DEFAULT_ACTIONABLE_NOTIFICATIONS,
     CONF_ABORT_ON_BACKUP_FAILURE,
     CONF_AUTO_QUARANTINE,
@@ -74,6 +76,7 @@ async def async_setup_entry(
             UpdateSystemSwitch(coordinator, entry),
             AutoQuarantineSwitch(coordinator, entry),
             ActionableNotificationsSwitch(coordinator, entry),
+            HealthCheckSwitch(coordinator, entry),
         ]
     )
 
@@ -104,13 +107,21 @@ class _FeatureSwitch(SwitchEntity):
         self._attr_unique_id = f"{entry.entry_id}_{unique_suffix}"
         self._attr_icon = icon
 
+    async def async_added_to_hass(self) -> None:
+        # Options saved from the Configure dialog trigger a rescan, which
+        # notifies listeners, so the switch follows those changes too.
+        self.async_on_remove(
+            self._coordinator.async_add_listener(self.async_write_ha_state)
+        )
+
     @property
     def device_info(self) -> dict:
         return self._coordinator.device_info
 
     @property
     def is_on(self) -> bool:
-        return bool(self._entry.options.get(self._conf_key, self._default))
+        # Merged view: values picked in the initial setup form live in entry.data.
+        return bool(self._coordinator.options.get(self._conf_key, self._default))
 
     async def async_turn_on(self, **kwargs) -> None:
         await self._set_value(True)
@@ -225,7 +236,7 @@ class BackupCleanupSwitch(_FeatureSwitch):
                 "ha_auto_updater_backup_cleanup_on",
                 "🧹 Backup Auto-Purge Enabled",
                 "Pre-update backups created by Auto Updater older than **{} day{}** "
-                "will be deleted automatically after each new backup. "
+                "will be deleted automatically each time a new backup is taken. "
                 "Only backups this integration created are touched — your manual "
                 "backups are never removed.".format(days, "s" if days != 1 else ""),
             )
@@ -416,4 +427,21 @@ class ActionableNotificationsSwitch(_FeatureSwitch):
             "Notification Action Buttons",
             "actionable_notifications_switch",
             "mdi:gesture-tap-button",
+        )
+
+
+class HealthCheckSwitch(_FeatureSwitch):
+    """After an install, check the add-on or device came back and warn if it did not."""
+
+    _conf_key = CONF_HEALTH_CHECK
+    _default = DEFAULT_HEALTH_CHECK
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: AutoUpdaterCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            "Health Check After Update",
+            "health_check_switch",
+            "mdi:heart-pulse",
         )

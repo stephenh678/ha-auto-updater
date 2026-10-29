@@ -31,6 +31,14 @@ from .const import (
     BACKUP_FAILURE_ISSUE_THRESHOLD,
     CONF_ACTIONABLE_NOTIFICATIONS,
     CONF_BLOCKING_ENTITIES,
+    CONF_HEALTH_CHECK,
+    CONF_QUIET_START,
+    CONF_QUIET_END,
+    DEFAULT_HEALTH_CHECK,
+    HEALTH_CHECK_SECONDS,
+    HEALTH_POLL_SECONDS,
+    HEALTH_SETTLE_SECONDS,
+    SKIPPED_STATE_FILE,
     CONF_MIN_RELEASE_AGE_DAYS,
     DEFAULT_ACTIONABLE_NOTIFICATIONS,
     DEFAULT_BLOCKING_ENTITIES,
@@ -113,17 +121,23 @@ from .const import (
     FREQ_HOURLY,
     FREQ_WEEKLY,
     HISTORY_FILE,
+    INSTALL_SETTLE_SECONDS,
+    VERIFY_GRACE_SECONDS,
     MAX_HISTORY_ENTRIES,
     RESUME_RUN_DELAY_MINUTES,
     RUN_STATE_FILE,
     SNOOZE_STATE_FILE,
     SYSTEM_UPDATE_POLL_SECONDS,
     SYSTEM_UPDATE_WATCH_SECONDS,
+    UNRECORDED_BACKUP_DAYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 EVENT_RUN_COMPLETE = "ha_auto_updater_run"
+
+# History note on a run that found nothing to install; consecutive ones are folded together
+NO_UPDATES_NOTE = "No updates available"
 
 # Pre-release markers: 1.0b1, 2.0.0-rc1, 0.1.0.dev0, 1.2.3-alpha, 3.0.beta.
 # "b<digits>" only counts directly after a version digit and "rc" only when it
@@ -195,6 +209,9 @@ class AutoUpdaterCoordinator:
         self._unsub_action = None
         # A "run skipped" notification is showing because of a blocking entity
         self._blocked_notified = False
+        # True between async_unload and the next async_setup, so a run that ends
+        # after the unload can't re-arm the schedule of a coordinator that is gone
+        self._unloaded = False
         # Consecutive failed pre-update backups, for the Repairs issue
         self._backup_failure_streak: int = 0
 
@@ -212,7 +229,11 @@ class AutoUpdaterCoordinator:
         self._previous_pending_count: int = -1   # -1 = first scan, never triggers notification
         self._last_digest_sent: datetime | None = None
         self._snoozed: dict[str, str] = {}       # entity_id -> ISO expiry timestamp
+        self._skipped_versions: dict[str, str] = {}  # entity_id -> version to leave alone
         self._tracked_backups: list[dict] = []   # pre-update backups we created
+        # Backups whose wait timed out: {"name", "created"}. Looked up by name on
+        # a later run so they can still be tracked and auto-purged.
+        self._unrecorded_backups: list[dict] = []
 
     # ------------------------------------------------------------------
     # Properties
@@ -229,6 +250,10 @@ class AutoUpdaterCoordinator:
     @property
     def debug(self) -> bool:
         return self.options.get(CONF_DEBUG, DEFAULT_DEBUG)
+
+    @property
+    def unloaded(self) -> bool:
+        return self._unloaded
 
     @property
     def device_info(self) -> dict:
@@ -249,6 +274,7 @@ class AutoUpdaterCoordinator:
     # ------------------------------------------------------------------
 
     async def async_setup(self) -> None:
+        self._unloaded = False
         if self._unsub_scan is not None:
             self._unsub_scan()
             self._unsub_scan = None
@@ -256,6 +282,7 @@ class AutoUpdaterCoordinator:
         await self._load_history()
         await self._load_digest_state()
         await self._load_snooze()
+        await self._load_skipped_versions()
         await self._load_backup_state()
         await self._load_seen_versions()
         await self._async_reconcile_interrupted_run()
@@ -273,6 +300,7 @@ class AutoUpdaterCoordinator:
             )
 
     async def async_unload(self) -> None:
+        self._unloaded = True
         self._cancel_timer()
         if self._unsub_scan is not None:
             self._unsub_scan()
@@ -315,6 +343,8 @@ class AutoUpdaterCoordinator:
 
     async def _async_reschedule(self) -> None:
         self._cancel_timer()
+        if self._unloaded:
+            return
         if not self.enabled:
             self.next_run = None
             _LOGGER.debug("Auto Updater: disabled, not scheduling.")
@@ -358,8 +388,13 @@ class AutoUpdaterCoordinator:
         return candidate
 
     async def _async_fire(self, _now: datetime) -> None:
-        await self.async_run_updates()
-        await self._async_reschedule()
+        try:
+            await self.async_run_updates()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Auto Updater: scheduled run failed unexpectedly.")
+        finally:
+            # The timer is one-shot: without this, a failed run ends the schedule.
+            await self._async_reschedule()
 
     # ------------------------------------------------------------------
     # Shared update filter & safety guards
@@ -425,6 +460,9 @@ class AutoUpdaterCoordinator:
                 until = self._snoozed.get(eid)
                 skip(entity, "snoozed", "snoozed until {}".format(until), until=until)
                 continue
+            if self._is_version_skipped(eid, latest):
+                skip(entity, "version_skipped", "version {} was skipped".format(latest))
+                continue
             if attrs.get("in_progress", False):
                 skip(
                     entity, "in_progress",
@@ -481,11 +519,14 @@ class AutoUpdaterCoordinator:
     # Background pending-update scan (read-only, no installs)
     # ------------------------------------------------------------------
 
-    async def _async_scan_pending(self, _now) -> None:
+    async def _async_scan_pending(self, _now, verify_grace_seconds: int = 0) -> None:
         """Refresh pending_count and pending_updates without installing anything.
 
         Runs on startup and every 30 minutes so the sensor reflects the real-time
         state of update entities between scheduled install runs.
+
+        verify_grace_seconds: a system update triggered less than this long ago
+        is not called failed yet (see _async_verify_pending).
         """
         # Verification below can quarantine (snooze) an entity, and snoozing
         # triggers a scan of its own. The outer scan is about to recompute
@@ -494,14 +535,14 @@ class AutoUpdaterCoordinator:
             return
         self._scan_in_progress = True
         try:
-            await self._async_scan_pending_inner()
+            await self._async_scan_pending_inner(verify_grace_seconds)
         finally:
             self._scan_in_progress = False
 
-    async def _async_scan_pending_inner(self) -> None:
+    async def _async_scan_pending_inner(self, verify_grace_seconds: int = 0) -> None:
         # Resolve any Core/OS/Supervisor installs whose result is still unknown
         try:
-            await self._async_verify_pending()
+            await self._async_verify_pending(verify_grace_seconds)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning("Auto Updater: pending-update verification error — %s", exc)
 
@@ -727,9 +768,28 @@ class AutoUpdaterCoordinator:
             retry_delay = int(self.options.get(CONF_RETRY_DELAY, DEFAULT_RETRY_DELAY))
 
             # --- Install with retry ---
+            if is_system_update:
+                # Same run marker a full run writes: a Core/OS restart part-way
+                # through the install must not lose the record of it.
+                await self._save_run_state({
+                    "started": dt_util.now().isoformat(),
+                    "resume": False,
+                    "items": [],
+                    "updated": [],
+                    "failed": [],
+                    "triggered": [],
+                    "deferred": list(self._deferred),
+                    "current": {
+                        "entity_id": entity_id, "title": title,
+                        "from": installed, "to": latest, "release_url": release_url,
+                    },
+                })
             outcome = await self._install_with_retry(
                 entity_id, title, latest, is_system_update, retry_delay
             )
+            if is_system_update and outcome != "pending":
+                # A pending outcome clears the marker once it is on the verification list.
+                await self._save_run_state(None)
             success = outcome != "failed"
             pending = outcome == "pending"
             self.hass.bus.async_fire(
@@ -754,6 +814,7 @@ class AutoUpdaterCoordinator:
                 _LOGGER.info("Auto Updater: ✓ %s  %s → %s (manual update)", title, installed, latest)
 
             run_time = dt_util.now()
+            scan_grace = 0
             notify_success: bool = self.options.get(CONF_NOTIFY_SUCCESS, DEFAULT_NOTIFY_SUCCESS)
             item = {
                 "entity_id": entity_id, "title": title,
@@ -770,6 +831,7 @@ class AutoUpdaterCoordinator:
                         note=f"Manual update of {title} triggered",
                     )
                 )
+                scan_grace = VERIFY_GRACE_SECONDS
             elif success:
                 await self._append_and_save_history(
                     self._build_history_entry(
@@ -787,7 +849,7 @@ class AutoUpdaterCoordinator:
                 )
                 await self._handle_failures([item])
 
-            await self._async_scan_pending(None)
+            await self._async_scan_pending(None, verify_grace_seconds=scan_grace)
 
             # Auto-restart if needed
             auto_restart: bool = self.options.get(CONF_AUTO_RESTART, DEFAULT_AUTO_RESTART)
@@ -882,23 +944,29 @@ class AutoUpdaterCoordinator:
             self.last_run = run_start
             self.last_run_count = 0
             self.last_run_failed = 0
+            self.last_run_duration = 0
             self.last_run_status = "No updates"
             self.failed_updates = []
-            await self._append_and_save_history({
+            if self._deferred:
+                # Nothing is left to install, so the queued follow-up pass is moot.
+                # Left in place it would be re-armed after every restart.
+                self._deferred = []
+                await self._save_run_state(None)
+            await self._append_no_update_entry({
                 "timestamp": run_start.isoformat(),
                 "updated": [],
                 "failed": [],
                 "total_updated": 0,
                 "total_failed": 0,
                 "duration_seconds": 0,
-                "note": "No updates available",
+                "note": NO_UPDATES_NOTE,
             })
             self.hass.bus.async_fire(EVENT_RUN_COMPLETE, {"total_updated": 0, "total_failed": 0})
             self.hass.bus.async_fire(EVENT_RUN_FINISHED, {"total_updated": 0, "total_failed": 0, "duration_seconds": 0})
             self._notify_listeners()
             return
 
-        titles = [e.attributes.get("title", e.entity_id) for e in available]
+        titles = [e.attributes.get("title") or e.entity_id for e in available]
         _LOGGER.info("Auto Updater: %d update(s) available — %s", len(available), titles)
 
         self.hass.bus.async_fire(
@@ -1037,6 +1105,7 @@ class AutoUpdaterCoordinator:
         failed_items: list[dict] = []
         triggered_items: list[dict] = []   # system updates awaiting verification
         deferred_items: list[dict] = []    # queued behind a system update restart
+        unhealthy_items: list[dict] = []   # installed, but the add-on or device did not come back
         restart_required_map: dict[str, bool] = {}  # entity_id -> requires restart
         system_updates_triggered = False
 
@@ -1088,6 +1157,14 @@ class AutoUpdaterCoordinator:
             run_marker["current"] = item
             await self._save_run_state(run_marker)
 
+            health_snapshot: dict[str, str] = {}
+            if (
+                self.options.get(CONF_HEALTH_CHECK, DEFAULT_HEALTH_CHECK)
+                and not is_system_update
+                and not restart_required_map[entity_id]
+            ):
+                health_snapshot = self._health_snapshot(entity_id)
+
             outcome = await self._install_with_retry(
                 entity_id, title, latest, is_system_update, retry_delay
             )
@@ -1101,6 +1178,15 @@ class AutoUpdaterCoordinator:
                     {"entity_id": entity_id, "title": title, "success": True, "from": installed, "to": latest},
                 )
                 _LOGGER.info("Auto Updater: ✓ %s  %s → %s", title, installed, latest)
+                if health_snapshot:
+                    unhealthy = await self._async_health_check(health_snapshot)
+                    if unhealthy:
+                        item["unhealthy"] = unhealthy
+                        unhealthy_items.append(item)
+                        _LOGGER.warning(
+                            "Auto Updater: %s installed, but these did not recover: %s",
+                            title, ", ".join(unhealthy),
+                        )
             elif outcome == "pending":
                 triggered = {**item, "triggered_at": dt_util.now().isoformat()}
                 triggered_items.append(triggered)
@@ -1203,6 +1289,9 @@ class AutoUpdaterCoordinator:
                 "Updates Installed",
                 "{} update(s) installed successfully.".format(len(updated_items)),
             )
+
+        if unhealthy_items:
+            self._send_unhealthy_notification(unhealthy_items)
 
         if failed_items:
             await self._handle_failures(failed_items)
@@ -1352,6 +1441,14 @@ class AutoUpdaterCoordinator:
                         "Auto Updater: attempt 1 failed for %s — %s  Retrying in %ds…",
                         title, exc, retry_delay,
                     )
+                    # A timed-out call can leave the install running. Calling
+                    # install again would be refused as a second job and read
+                    # as a failure, so wait for the first one to finish.
+                    if await self._wait_for_running_install(entity_id, latest):
+                        _LOGGER.info(
+                            "Auto Updater: %s finished installing after the call timed out.", title
+                        )
+                        return "success"
                     await asyncio.sleep(retry_delay)
                     continue
                 _LOGGER.error("Auto Updater: ✗ %s failed after retry — %s", title, exc)
@@ -1362,6 +1459,25 @@ class AutoUpdaterCoordinator:
                 return await self._watch_system_update(entity_id, latest)
             return "success"
         return "failed"
+
+    async def _wait_for_running_install(self, entity_id: str, latest: str) -> bool:
+        """Wait out an install that is still running after its service call gave up.
+
+        Returns True when it finished and the entity now reports the new version.
+        """
+        st = self.hass.states.get(entity_id)
+        if st is None or not st.attributes.get("in_progress"):
+            return False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + INSTALL_SETTLE_SECONDS
+        while loop.time() < deadline:
+            await asyncio.sleep(SYSTEM_UPDATE_POLL_SECONDS)
+            st = self.hass.states.get(entity_id)
+            if st is None:
+                return False
+            if not st.attributes.get("in_progress"):
+                return st.state == "off" or str(st.attributes.get("installed_version")) == str(latest)
+        return False
 
     async def _watch_system_update(self, entity_id: str, latest: str) -> str:
         """Observe a non-blocking Core/OS/Supervisor install.
@@ -1389,8 +1505,13 @@ class AutoUpdaterCoordinator:
                 return "pending"
             await asyncio.sleep(SYSTEM_UPDATE_POLL_SECONDS)
 
-    async def _async_verify_pending(self) -> None:
-        """Resolve system updates that were triggered but not yet confirmed."""
+    async def _async_verify_pending(self, grace_seconds: int = 0) -> None:
+        """Resolve system updates that were triggered but not yet confirmed.
+
+        An update triggered less than grace_seconds ago that shows no progress
+        yet stays pending instead of failing: the Supervisor may not have
+        flagged it in progress so soon after the trigger.
+        """
         if not self._pending_verification:
             return
         now = dt_util.now()
@@ -1418,7 +1539,7 @@ class AutoUpdaterCoordinator:
                 # Moved off the version we started from (e.g. a newer release
                 # landed in between) — the install we triggered did happen.
                 verified_ok.append(item)
-            elif st.attributes.get("in_progress") and age < 86400:
+            elif (st.attributes.get("in_progress") and age < 86400) or age < grace_seconds:
                 still_pending.append(item)
             else:
                 # Still sitting on the original version with nothing in flight:
@@ -1610,19 +1731,33 @@ class AutoUpdaterCoordinator:
         manager = self._get_backup_manager()
         if manager is not None:
             try:
+                await self._adopt_unrecorded_backups(manager)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("Auto Updater: could not look up earlier backups — %s", exc)
+        # Purge before creating, so old backups still go when new ones keep failing.
+        try:
+            await self._purge_old_backups()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning("Auto Updater: could not purge old backups — %s", exc)
+        if manager is not None:
+            try:
                 ref = await asyncio.wait_for(
                     self._create_backup_via_manager(manager, name),
                     timeout=BACKUP_TIMEOUT_SECONDS,
                 )
             except TimeoutError:
                 self._last_backup_timed_out = True
+                self._unrecorded_backups.append({"name": name, "created": dt_util.now().isoformat()})
+                await self._save_backup_state()
                 _LOGGER.error(
                     "Auto Updater: backup via backup manager did not finish within %d min — it may still be running.",
                     BACKUP_TIMEOUT_SECONDS // 60,
                 )
                 return False
-            except (TypeError, AttributeError, NotImplementedError) as exc:
-                # API shape differs from what we expect — use the service instead.
+            except NotImplementedError as exc:
+                # Raised only before any backup was started (no local agent, or the
+                # manager's API differs from what we expect): use the service instead.
+                # An error after the start must not fall through to a second backup.
                 _LOGGER.debug("Auto Updater: backup manager API unavailable (%s) — using service.", exc)
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.warning("Auto Updater: backup via backup manager failed — %s", exc)
@@ -1631,7 +1766,6 @@ class AutoUpdaterCoordinator:
                 if ref is None:
                     _LOGGER.debug("Auto Updater: backup created but its id could not be determined.")
                 await self._record_backup("backup", name, ref)
-                await self._purge_old_backups()
                 return True
 
         # Try modern backup domain first, then Supervisor (HA OS)
@@ -1641,6 +1775,9 @@ class AutoUpdaterCoordinator:
         ]:
             if not self.hass.services.has_service(domain, service):
                 continue
+            # backup.create takes no name and returns no id, so note which backups
+            # exist now and pick out the new one afterwards.
+            before = await self._backup_ids(manager)
             try:
                 ref = await self._call_backup_service(domain, service, data)
             except TimeoutError:
@@ -1653,11 +1790,29 @@ class AutoUpdaterCoordinator:
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.warning("Auto Updater: backup via %s.%s failed — %s", domain, service, exc)
                 return False
+            if ref is None and before is not None:
+                after = await self._backup_ids(manager)
+                new = (after or set()) - before
+                if len(new) == 1:
+                    ref = next(iter(new))
             await self._record_backup(domain, name, ref)
-            await self._purge_old_backups()
             return True
         _LOGGER.warning("Auto Updater: no backup service found — skipping backup.")
         return False
+
+    @staticmethod
+    async def _backup_ids(manager) -> set | None:
+        """Ids of the backups the manager lists now, or None if it can't say."""
+        if manager is None:
+            return None
+        try:
+            result = await manager.async_get_backups()
+        except Exception:  # noqa: BLE001
+            return None
+        backups = result[0] if isinstance(result, tuple) else result
+        if not isinstance(backups, dict):
+            return None
+        return {getattr(b, "backup_id", backup_id) for backup_id, b in backups.items()}
 
     def _get_backup_manager(self):
         """Return the HA backup manager (2025.1+) or None if unavailable."""
@@ -1676,14 +1831,28 @@ class AutoUpdaterCoordinator:
 
     @staticmethod
     def _local_backup_agent_ids(manager) -> list[str]:
+        # Core / Container: the core local agent. On HA OS / Supervised that agent
+        # isn't registered and the Supervisor's own "hassio.local" takes its place.
         local = getattr(manager, "local_backup_agents", None)
         if local:
             return [a for a in local if isinstance(a, str)]
         agents = getattr(manager, "backup_agents", None) or {}
-        return [
-            a for a in agents
-            if isinstance(a, str) and (a.startswith("backup.") or a.startswith("hassio."))
-        ]
+        # Only the local one: the other hassio.* agents are network mounts, and HA's
+        # own pre-update backups don't send every backup to every mount either.
+        return [a for a in ("hassio.local",) if a in agents]
+
+    @staticmethod
+    def _manager_idle(manager) -> bool:
+        state = getattr(manager, "state", None)
+        return state is None or str(getattr(state, "value", state)).lower().endswith("idle")
+
+    async def _wait_for_manager_idle(self, manager) -> None:
+        """The manager runs one backup job at a time and refuses a second as busy."""
+        if self._manager_idle(manager):
+            return
+        _LOGGER.info("Auto Updater: another backup is running — waiting for it to finish.")
+        while not self._manager_idle(manager):
+            await asyncio.sleep(5)
 
     async def _create_backup_via_manager(self, manager, name: str):
         """Create a named backup through the backup manager. Returns its id or None."""
@@ -1693,14 +1862,18 @@ class AutoUpdaterCoordinator:
         # On HA OS / Supervised the whole point of the pre-update backup is to
         # cover the add-ons we are about to update, so include them there.
         include_addons = "hassio" in getattr(self.hass.config, "components", ())
+        # An automatic backup or a restore may be running (same time of night, say).
+        await self._wait_for_manager_idle(manager)
         _LOGGER.debug(
             "Auto Updater: creating backup '%s' via backup manager (agents=%s, addons=%s)",
             name, agent_ids, include_addons,
         )
         # Shielded: if our timeout fires, stop waiting but leave HA's own backup
         # job alone. Cancelling it mid-write would leave a broken backup.
-        await asyncio.shield(
-            manager.async_create_backup(
+        try:
+            # Building the call is where a signature mismatch shows up, before
+            # anything has started.
+            job = manager.async_create_backup(
                 agent_ids=agent_ids,
                 include_addons=None,
                 include_all_addons=include_addons,
@@ -1710,24 +1883,52 @@ class AutoUpdaterCoordinator:
                 name=name,
                 password=None,
             )
-        )
+        except (TypeError, AttributeError) as exc:
+            raise NotImplementedError("backup manager API differs: {}".format(exc)) from exc
+        await asyncio.shield(job)
         # async_create_backup awaits completion on current HA, but guard against
         # a version that only initiates: wait until the manager is idle or the
         # backup is listed under our name.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + BACKUP_TIMEOUT_SECONDS
+        # The name only resolves to the minute, so skip backups we already track.
+        known = {b.get("ref") for b in self._tracked_backups}
         while True:
-            ref = await self._find_backup_id_by_name(manager, name)
-            state = getattr(manager, "state", None)
-            idle = state is None or str(getattr(state, "value", state)).lower().endswith("idle")
-            if ref is not None or idle:
+            ref = await self._find_backup_id_by_name(manager, name, known)
+            if ref is not None or self._manager_idle(manager):
                 return ref
             if loop.time() >= deadline:
                 raise TimeoutError("backup did not finish in time")
             await asyncio.sleep(5)
 
+    async def _adopt_unrecorded_backups(self, manager) -> None:
+        """Track backups that finished after an earlier run stopped waiting for them."""
+        if not self._unrecorded_backups:
+            return
+        known = {b.get("ref") for b in self._tracked_backups}
+        cutoff = dt_util.now() - timedelta(days=UNRECORDED_BACKUP_DAYS)
+        remaining: list[dict] = []
+        for item in self._unrecorded_backups:
+            ref = await self._find_backup_id_by_name(manager, item.get("name", ""), known)
+            if ref:
+                known.add(ref)
+                self._tracked_backups.append({
+                    "ref": ref,
+                    "domain": "backup",
+                    "name": item["name"],
+                    "created": item.get("created") or dt_util.now().isoformat(),
+                })
+                continue
+            created = dt_util.parse_datetime(item.get("created", "") or "")
+            if created is not None and created.tzinfo is None:
+                created = dt_util.as_utc(created)
+            if created is not None and created > cutoff:
+                remaining.append(item)  # may still be running; look again next time
+        self._unrecorded_backups = remaining
+        await self._save_backup_state()
+
     @staticmethod
-    async def _find_backup_id_by_name(manager, name: str):
+    async def _find_backup_id_by_name(manager, name: str, exclude=frozenset()):
         try:
             result = await manager.async_get_backups()
         except Exception:  # noqa: BLE001
@@ -1737,7 +1938,9 @@ class AutoUpdaterCoordinator:
             return None
         for backup_id, b in backups.items():
             if getattr(b, "name", None) == name:
-                return getattr(b, "backup_id", backup_id)
+                found = getattr(b, "backup_id", backup_id)
+                if found not in exclude:
+                    return found
         return None
 
     async def _call_backup_service(self, domain: str, service: str, data: dict):
@@ -1802,8 +2005,13 @@ class AutoUpdaterCoordinator:
                 created = dt_util.as_utc(created)
             if created is not None and created < cutoff:
                 if not ref:
-                    # Never learned an id for it (older HA) — nothing we can
-                    # delete, so stop carrying it around forever.
+                    # Never learned an id for it — nothing we can delete, so stop
+                    # carrying it around forever, but say so.
+                    _LOGGER.info(
+                        "Auto Updater: backup %s is past its retention but its id was never "
+                        "known, so it was not deleted — remove it manually if you no longer need it.",
+                        b.get("name", "?"),
+                    )
                     continue
                 if await self._delete_backup(b.get("domain", ""), ref):
                     purged += 1
@@ -1863,6 +2071,8 @@ class AutoUpdaterCoordinator:
             self._tracked_backups = [b for b in backups if isinstance(b, dict)]
             streak = data.get("consecutive_failures", 0) if isinstance(data, dict) else 0
             self._backup_failure_streak = streak if isinstance(streak, int) and streak > 0 else 0
+            unrecorded = data.get("unrecorded", []) if isinstance(data, dict) else []
+            self._unrecorded_backups = [b for b in unrecorded if isinstance(b, dict)]
         except (json.JSONDecodeError, OSError) as exc:
             _LOGGER.warning("Auto Updater: could not load backup state — %s", exc)
 
@@ -1872,6 +2082,7 @@ class AutoUpdaterCoordinator:
         data = {
             "backups": list(self._tracked_backups),
             "consecutive_failures": self._backup_failure_streak,
+            "unrecorded": list(self._unrecorded_backups),
         }
 
         def _write():
@@ -2004,6 +2215,18 @@ class AutoUpdaterCoordinator:
         except OSError as exc:
             _LOGGER.error("Auto Updater: could not save history — %s", exc)
 
+    async def _append_no_update_entry(self, entry: dict) -> None:
+        """Record a run that found nothing, folding it into a preceding one.
+
+        Hourly runs would otherwise fill the capped history with identical
+        entries and push out the runs that installed or failed something.
+        """
+        if self.history and self.history[-1].get("note") == NO_UPDATES_NOTE:
+            self.history[-1] = entry
+            await self._save_history()
+            return
+        await self._append_and_save_history(entry)
+
     async def _append_and_save_history(self, entry: dict) -> None:
         self.history.append(entry)
         if len(self.history) > MAX_HISTORY_ENTRIES:
@@ -2051,6 +2274,26 @@ class AutoUpdaterCoordinator:
             message,
             title="Auto Updater — Update failures",
             notification_id="ha_auto_updater_failure",
+        )
+
+    def _send_unhealthy_notification(self, items: list[dict]) -> None:
+        lines = [
+            "- **{}** ({} → {}): {} not working after the update".format(
+                i["title"], i["from"], i["to"], ", ".join(i["unhealthy"])
+            )
+            for i in items
+        ]
+        self._send_status_notification(
+            "Update Installed, But Not Healthy",
+            "These updates installed, but something on the same device did not come back:\n\n"
+            + "\n".join(lines)
+            + "\n\nCheck the add-on or device logs. The pre-update backup can be restored from "
+            "**Settings → System → Backups**.",
+            notification_id="ha_auto_updater_unhealthy",
+        )
+        self._send_push_notification(
+            "Update Not Healthy",
+            "{} did not recover after updating.".format(", ".join(i["title"] for i in items)),
         )
 
     def _send_pre_update_notification(self, titles: list[str], delay_minutes: int) -> None:
@@ -2356,27 +2599,68 @@ class AutoUpdaterCoordinator:
                 })
         return blockers
 
+    def _quiet_window(self) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        """The configured quiet hours as ((h, m), (h, m)), or None when off or invalid."""
+        def parse(value):
+            try:
+                parts = str(value).split(":")
+                h, m = int(parts[0]), int(parts[1])
+            except (ValueError, IndexError):
+                return None
+            return (h, m) if 0 <= h < 24 and 0 <= m < 60 else None
+
+        start = parse(self.options.get(CONF_QUIET_START))
+        end = parse(self.options.get(CONF_QUIET_END))
+        if start is None or end is None or start == end:
+            return None
+        return start, end
+
+    def _in_quiet_hours(self, now: datetime | None = None) -> bool:
+        """True while the clock is inside the quiet window (which may cross midnight)."""
+        window = self._quiet_window()
+        if window is None:
+            return False
+        (sh, sm), (eh, em) = window
+        now = now or dt_util.now()
+        minutes = now.hour * 60 + now.minute
+        start, end = sh * 60 + sm, eh * 60 + em
+        if start < end:
+            return start <= minutes < end
+        return minutes >= start or minutes < end
+
+    def _quiet_hours_text(self) -> str:
+        (sh, sm), (eh, em) = self._quiet_window()
+        return "{:02d}:{:02d}–{:02d}:{:02d}".format(sh, sm, eh, em)
+
     def _skip_if_blocked(self) -> bool:
-        """Skip an automatic run while a blocking entity is on. Returns True if skipped."""
+        """Skip an automatic run during quiet hours or while a blocking entity is on.
+
+        Returns True if skipped.
+        """
         blockers = self._active_blockers()
-        if not blockers:
+        quiet = self._in_quiet_hours()
+        if not blockers and not quiet:
             if self._blocked_notified:
                 self._dismiss_notification("ha_auto_updater_blocked")
                 self._blocked_notified = False
             return False
-        names = ", ".join(b["name"] for b in blockers)
-        _LOGGER.info("Auto Updater: skipping automatic run — blocked by %s.", names)
+        reasons: list[str] = []
+        if blockers:
+            names = ", ".join(b["name"] for b in blockers)
+            reasons.append("**{}** {} on".format(names, "is" if len(blockers) == 1 else "are"))
+        if quiet:
+            reasons.append("quiet hours ({}) are in effect".format(self._quiet_hours_text()))
+        why = " and ".join(reasons)
+        _LOGGER.info("Auto Updater: skipping automatic run — %s.", why.replace("**", ""))
         self._send_status_notification(
             "Run Skipped",
-            "The automatic update run was skipped because **{}** {} on. "
-            "Updates will be tried again on the next run.".format(
-                names, "is" if len(blockers) == 1 else "are"
-            ),
+            "The automatic update run was skipped because {}. "
+            "Updates will be tried again on the next run.".format(why),
             notification_id="ha_auto_updater_blocked",
         )
         self._blocked_notified = True
         self.last_run = dt_util.now()
-        self.last_run_status = "Skipped (Blocked)"
+        self.last_run_status = "Skipped (Blocked)" if blockers else "Skipped (Quiet hours)"
         self._notify_listeners()
         return True
 
@@ -2453,6 +2737,13 @@ class AutoUpdaterCoordinator:
                 "reason": "blocking_entity",
                 "entity_id": b["entity_id"],
                 "detail": "{} is on.".format(b["name"]),
+                "automatic_runs_only": True,
+            })
+
+        if self._in_quiet_hours():
+            blockers.append({
+                "reason": "quiet_hours",
+                "detail": "Quiet hours ({}) are in effect.".format(self._quiet_hours_text()),
                 "automatic_runs_only": True,
             })
 
@@ -2590,6 +2881,111 @@ class AutoUpdaterCoordinator:
                 "backup_failing",
                 {"count": str(self._backup_failure_streak)},
             )
+
+    # ------------------------------------------------------------------
+    # Skipped versions (leave one bad release alone; the next one installs)
+    # ------------------------------------------------------------------
+
+    def _is_version_skipped(self, entity_id: str, latest) -> bool:
+        skipped = self._skipped_versions.get(entity_id)
+        if skipped is None:
+            return False
+        if skipped == str(latest):
+            return True
+        self._skipped_versions.pop(entity_id, None)  # a newer version arrived
+        return False
+
+    async def async_skip_version(self, entity_id: str) -> None:
+        """Skip the version this update entity currently offers."""
+        state = self.hass.states.get(entity_id)
+        latest = state.attributes.get("latest_version") if state else None
+        if not latest:
+            raise ValueError("{} has no pending version to skip.".format(entity_id))
+        self._skipped_versions[entity_id] = str(latest)
+        _LOGGER.info("Auto Updater: skipping version %s of %s.", latest, entity_id)
+        await self._save_skipped_versions()
+        await self._async_scan_pending(None)
+
+    async def async_clear_skipped_version(self, entity_id: str | None = None) -> None:
+        """Stop skipping one update's version, or every skipped version when None."""
+        if entity_id:
+            self._skipped_versions.pop(entity_id, None)
+        else:
+            self._skipped_versions.clear()
+        await self._save_skipped_versions()
+        await self._async_scan_pending(None)
+
+    async def _load_skipped_versions(self) -> None:
+        path = self.hass.config.path(SKIPPED_STATE_FILE)
+        try:
+            data = await self._read_json_file(path, {})
+            if isinstance(data, dict):
+                self._skipped_versions = {k: v for k, v in data.items() if isinstance(v, str)}
+        except (json.JSONDecodeError, OSError) as exc:
+            _LOGGER.warning("Auto Updater: could not load skipped versions — %s", exc)
+
+    async def _save_skipped_versions(self) -> None:
+        path = self.hass.config.path(SKIPPED_STATE_FILE)
+        tmp = path + ".tmp"
+        data = dict(self._skipped_versions)
+
+        def _write():
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, path)
+
+        try:
+            await self.hass.async_add_executor_job(_write)
+        except OSError as exc:
+            _LOGGER.error("Auto Updater: could not save skipped versions — %s", exc)
+
+    # ------------------------------------------------------------------
+    # Health check after an install
+    # ------------------------------------------------------------------
+
+    def _health_snapshot(self, entity_id: str) -> dict[str, str]:
+        """States of the other entities on this update's device that look healthy now."""
+        registry = er.async_get(self.hass)
+        entry = registry.async_get(entity_id)
+        if entry is None or not entry.device_id:
+            return {}
+        snapshot: dict[str, str] = {}
+        for other in er.async_entries_for_device(registry, entry.device_id):
+            if other.domain == "update":
+                continue
+            state = self.hass.states.get(other.entity_id)
+            if state is None or state.state in ("unavailable", "unknown"):
+                continue
+            snapshot[other.entity_id] = state.state
+        return snapshot
+
+    def _unhealthy_entities(self, snapshot: dict[str, str]) -> list[str]:
+        """Entities fine before the install but unavailable now, or a 'running'
+        sensor that went from on to off."""
+        bad: list[str] = []
+        for eid, before in snapshot.items():
+            state = self.hass.states.get(eid)
+            if state is None or state.state == "unavailable":
+                bad.append(eid)
+            elif (
+                eid.startswith("binary_sensor.")
+                and state.attributes.get("device_class") == "running"
+                and before == "on"
+                and state.state == "off"
+            ):
+                bad.append(eid)
+        return bad
+
+    async def _async_health_check(self, snapshot: dict[str, str]) -> list[str]:
+        """Wait for the device to settle; return what is still unhealthy (empty = fine)."""
+        await asyncio.sleep(HEALTH_SETTLE_SECONDS)
+        waited = 0
+        bad = self._unhealthy_entities(snapshot)
+        while bad and waited < HEALTH_CHECK_SECONDS and self.enabled:
+            await asyncio.sleep(HEALTH_POLL_SECONDS)
+            waited += HEALTH_POLL_SECONDS
+            bad = self._unhealthy_entities(snapshot)
+        return bad
 
     # ------------------------------------------------------------------
     # Snooze (per-update temporary skip)
